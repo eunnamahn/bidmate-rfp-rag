@@ -149,12 +149,26 @@ with st.sidebar:
             st.error(f"문서 목록 조회 실패: {e}")
 
     st.divider()
+    if st.button("대화 초기화"):
+        st.session_state.history = []
+        st.session_state.messages = []
+        st.rerun()
     _render_settings_panel()
 
+# 히스토리 초기화
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 # 본문: 모드 선택 + 질문 입력
 mode = st.radio("모드", ["QA (질문답변)", "요약"], horizontal=True)
 endpoint = "/chat" if mode.startswith("QA") else "/summarize"
+
+# 이전 대화 기록 표시
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
 placeholder = (
     "예: 이 사업의 평가 배점 기준은?"
@@ -167,15 +181,30 @@ if st.button("실행", type="primary"):
     if not question.strip():
         st.warning("질문을 입력하세요.")
     else:
+        with st.chat_message("user"):
+            st.markdown(question)
+        st.session_state.messages.append({"role": "user", "content": question})
+
         with st.spinner("백엔드에 요청 중..."):
             try:
                 resp = requests.post(
                     f"{BACKEND_URL}{endpoint}",
-                    json={"question": question},
+                    json={
+                        "question": question,
+                        "history": st.session_state.history,
+                    },
                     timeout=120,
                 )
                 if resp.status_code == 200:
-                    _render_answer(resp.json())
+                    data = resp.json()
+                    with st.chat_message("assistant"):
+                        _render_answer(data)
+                    st.session_state.history.append(
+                        (question, data.get("answer", ""))
+                    )
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": data.get("answer", "")}
+                    )
                 else:
                     st.error(f"오류 {resp.status_code}: {resp.text}")
             except Exception as e:
