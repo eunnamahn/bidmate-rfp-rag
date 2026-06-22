@@ -33,6 +33,7 @@ from src.evaluation.evaluate import REFUSAL_MARK
 from src.generator import generate_answer
 from src.loader import load_documents
 from src.retriever import (
+    build_meta_filtered_retriever,
     build_org_filtered_retriever,
     build_retriever,
     known_orgs,
@@ -49,6 +50,8 @@ class ChatRequest(BaseModel):
     question: str
     # 대화 히스토리: [(사용자질문, 어시스턴트답변), ...]. 멀티턴 문맥 유지용.
     history: List[Tuple[str, str]] = []
+    # 특정 RFP 한 건으로 한정하고 싶을 때(원클릭 요약 등) 파일명 지정.
+    filename: Optional[str] = None
 
 
 class ConfigUpdate(BaseModel):
@@ -172,28 +175,33 @@ def _dedup_sources(docs) -> List[Source]:
     return out
 
 
-def _select_retriever(question: str):
-    """질문에 기관명이 있으면 메타데이터 필터 검색기를, 아니면 기본 검색기를 쓴다."""
-    retriever = _STATE["retriever"]
+def _select_retriever(question: str, filename: Optional[str] = None):
+    """검색 범위를 정한다.
+
+    filename이 있으면 그 문서 한 건으로 한정(원클릭 요약 등),
+    없고 질문에 기관명이 있으면 그 기관으로 한정, 아니면 기본 검색기.
+    """
     cfg = _STATE["cfg"]
-    if not cfg["retriever"].get("use_metadata_filter", True):
-        return retriever
-    matched = match_orgs(question, _STATE.get("known_orgs", set()))
-    if matched:
-        # 특정 기관 관련 질문 -> 그 기관 문서로만 한정해 정확도/누락을 개선한다.
-        return build_org_filtered_retriever(
-            _STATE["vectorstore"], cfg["retriever"].get("k", 4),
-            matched, _STATE.get("n_vectors", 10000),
+    k = cfg["retriever"].get("k", 4)
+    n = _STATE.get("n_vectors", 10000)
+    if filename:
+        return build_meta_filtered_retriever(
+            _STATE["vectorstore"], k, {"파일명": filename}, n
         )
-    return retriever
+    if cfg["retriever"].get("use_metadata_filter", True):
+        matched = match_orgs(question, _STATE.get("known_orgs", set()))
+        if matched:
+            return build_org_filtered_retriever(_STATE["vectorstore"], k, matched, n)
+    return _STATE["retriever"]
 
 
 def _answer(mode: str, question: str,
-            history: Optional[List[Tuple[str, str]]] = None) -> ChatResponse:
+            history: Optional[List[Tuple[str, str]]] = None,
+            filename: Optional[str] = None) -> ChatResponse:
     if "retriever" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
     answer, docs = generate_answer(
-        _select_retriever(question), _STATE["llm"], question,
+        _select_retriever(question, filename), _STATE["llm"], question,
         mode=mode, history=history or [],
     )
     return ChatResponse(
@@ -269,6 +277,7 @@ def documents() -> Dict[str, Any]:
         if fn and fn not in seen:
             seen[fn] = {
                 "파일명": fn,
+                "사업명": m.get("사업명"),
                 "기관": m.get("기관"),
                 "금액": m.get("금액"),
                 "마감일": m.get("마감일"),
@@ -281,9 +290,9 @@ def documents() -> Dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _answer("qa", req.question, req.history)
+    return _answer("qa", req.question, req.history, req.filename)
 
 
 @app.post("/summarize", response_model=ChatResponse)
 def summarize(req: ChatRequest) -> ChatResponse:
-    return _answer("summary", req.question, req.history)
+    return _answer("summary", req.question, req.history, req.filename)

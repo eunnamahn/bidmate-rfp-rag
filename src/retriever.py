@@ -40,17 +40,23 @@ def match_orgs(query: str, orgs) -> List[str]:
     return [o for o in orgs if len(_norm_org(o)) >= 4 and _norm_org(o) in nq]
 
 
-def build_org_filtered_retriever(vectorstore, k: int, matched_orgs: List[str],
-                                 n_vectors: int):
-    """기관 메타데이터로 필터링하는 dense 검색기를 만든다.
+def build_meta_filtered_retriever(vectorstore, k: int, filt: Dict[str, Any],
+                                  n_vectors: int):
+    """메타데이터 동등 필터로 한정 검색하는 dense 검색기를 만든다.
 
-    fetch_k를 전체 벡터 수로 둬서 '해당 기관 전체'에서 유사도 상위 k를 고른다.
+    fetch_k를 전체 벡터 수로 둬서 '필터에 해당하는 전체'에서 유사도 상위 k를 고른다.
     (FAISS는 기본적으로 가까운 fetch_k개만 뽑은 뒤 필터하므로 fetch_k를 키운다.)
     """
-    value = matched_orgs if len(matched_orgs) > 1 else matched_orgs[0]
     return vectorstore.as_retriever(
-        search_kwargs={"k": k, "filter": {"기관": value}, "fetch_k": max(n_vectors, k)}
+        search_kwargs={"k": k, "filter": filt, "fetch_k": max(n_vectors, k)}
     )
+
+
+def build_org_filtered_retriever(vectorstore, k: int, matched_orgs: List[str],
+                                 n_vectors: int):
+    """기관 메타데이터로 한정 검색하는 검색기(범용 필터의 기관 전용 래퍼)."""
+    value = matched_orgs if len(matched_orgs) > 1 else matched_orgs[0]
+    return build_meta_filtered_retriever(vectorstore, k, {"기관": value}, n_vectors)
 
 
 def build_retriever(vectorstore, chunks: List[Document], cfg: Dict[str, Any]):

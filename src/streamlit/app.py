@@ -1,7 +1,8 @@
 """입찰메이트 RFP RAG - Streamlit UI.
 
-중요: 이 UI는 RAG 파이프라인을 직접 import하지 않는다.
-오직 백엔드 FastAPI(/chat, /summarize, /documents, /health)만 호출한다.
+컨설턴트가 수백 건의 RFP를 빠르게 훑고(목록), 핵심을 요약하고(요약),
+세부를 질문(QA)하는 흐름에 맞춰 탭으로 구성한다.
+이 UI는 RAG 파이프라인을 직접 import하지 않고 백엔드 FastAPI만 호출한다.
 
 실행:
   streamlit run src/streamlit/app.py
@@ -11,6 +12,7 @@
 import os
 from urllib.parse import quote
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -18,11 +20,24 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="입찰메이트 RFP RAG", layout="wide")
 st.title("입찰메이트 RFP RAG")
-st.caption("RFP 문서 기반 질의응답 / 요약 (백엔드 API 연동)")
+st.caption("공공·기업 RFP를 추출·요약해 입찰 기회를 빠르게 찾는 컨설팅 어시스턴트")
 
+
+# ──────────────────────────────────────────────
+# 공통 유틸 / 렌더러
+# ──────────────────────────────────────────────
 
 def _won(amount):
     return f"{amount:,}원" if isinstance(amount, int) else "미기재"
+
+
+def _file_links(파일명: str) -> str:
+    """원본 파일 보기/다운로드 HTML 링크를 만든다(새 탭)."""
+    q = quote(파일명)
+    return (
+        f"<a href='{BACKEND_URL}/file?name={q}' target='_blank'>파일 보기</a> · "
+        f"<a href='{BACKEND_URL}/file?name={q}&download=1' target='_blank'>다운로드</a>"
+    )
 
 
 def _render_sources(sources):
@@ -40,15 +55,7 @@ def _render_sources(sources):
             f"   - 기관: {기관} · 사업금액: {_won(s.get('금액'))} · 마감일: {s.get('마감일') or '미상'}"
         )
         if 파일명:
-            q = quote(파일명)
-            view_url = f"{BACKEND_URL}/file?name={q}"
-            dl_url = f"{BACKEND_URL}/file?name={q}&download=1"
-            # 새 탭에서 열리도록 HTML 링크로 렌더링한다.
-            st.markdown(
-                f"&nbsp;&nbsp;&nbsp;<a href='{view_url}' target='_blank'>파일 보기</a> · "
-                f"<a href='{dl_url}' target='_blank'>다운로드</a>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("&nbsp;&nbsp;&nbsp;" + _file_links(파일명), unsafe_allow_html=True)
 
 
 def _render_answer(data):
@@ -57,17 +64,38 @@ def _render_answer(data):
         st.warning("거절 응답: 문서에서 근거를 찾지 못했습니다.")
         st.markdown(f"> {data.get('answer', '')}")
     else:
-        st.success("답변")
         st.markdown(data.get("answer", ""))
     st.divider()
     _render_sources(data.get("sources", []))
 
 
-def _preset_selectbox(label, group, help_reindex=False):
-    """카탈로그의 한 그룹(llm/embedding/chunk)을 드롭다운으로 그린다.
+@st.cache_data(ttl=120, show_spinner=False)
+def _fetch_documents():
+    """인덱싱된 문서 목록을 가져온다(120초 캐시)."""
+    r = requests.get(f"{BACKEND_URL}/documents", timeout=20)
+    r.raise_for_status()
+    return r.json().get("documents", [])
 
-    선택된 프리셋의 key를 반환한다. 현재 적용된 프리셋이 기본 선택된다.
-    """
+
+def _post(endpoint: str, payload: dict, timeout: int = 180):
+    """백엔드 POST 호출 공통 래퍼. (성공 시 dict, 실패 시 None+에러표시)"""
+    try:
+        resp = requests.post(f"{BACKEND_URL}{endpoint}", json=payload, timeout=timeout)
+    except Exception as e:
+        st.error(f"요청 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
+# ──────────────────────────────────────────────
+# 설정 패널 (사이드바)
+# ──────────────────────────────────────────────
+
+def _preset_selectbox(label, group, help_reindex=False):
+    """카탈로그 한 그룹(llm/embedding/chunk)을 드롭다운으로 그린다."""
     presets = group.get("presets", [])
     if not presets:
         return None
@@ -75,7 +103,7 @@ def _preset_selectbox(label, group, help_reindex=False):
     label_map = {p["key"]: p["label"] for p in presets}
     current = group.get("current")
     index = keys.index(current) if current in keys else 0
-    help_txt = "변경하면 재인덱싱이 필요합니다(시간이 걸릴 수 있음)." if help_reindex else None
+    help_txt = "변경하면 재인덱싱이 필요할 수 있습니다." if help_reindex else None
     return st.selectbox(
         label, keys, index=index,
         format_func=lambda k: label_map.get(k, k), help=help_txt,
@@ -103,44 +131,172 @@ def _render_settings_panel():
         k = st.slider("검색 문서 수 (k)", 1, 10, int(retr.get("k", 4)))
         use_bm25 = st.checkbox("BM25 하이브리드 검색", bool(retr.get("use_bm25", False)))
         temperature = st.slider(
-            "temperature", 0.0, 1.0, float(settings.get("llm", {}).get("temperature", 0)), 0.1
+            "temperature", 0.0, 1.0,
+            float(settings.get("llm", {}).get("temperature", 0)), 0.1,
         )
 
-    # 임베딩/청킹을 현재와 다르게 골랐으면 재인덱싱 경고
     reindex_will = (
         emb_key != catalog.get("embedding", {}).get("current")
         or chunk_key != catalog.get("chunk", {}).get("current")
     )
     if reindex_will:
-        st.caption("임베딩/청킹이 바뀌었습니다. 적용 시 캐시가 없으면 재인덱싱(시간 소요)이 일어납니다.")
+        st.caption("임베딩/청킹이 바뀌었습니다. 적용 시 캐시가 없으면 재인덱싱(시간 소요).")
 
     if st.button("설정 적용", use_container_width=True):
         payload = {
-            "llm_preset": llm_key,
-            "embedding_preset": emb_key,
-            "chunk_preset": chunk_key,
-            "retriever_k": k,
-            "retriever_use_bm25": use_bm25,
-            "llm_temperature": temperature,
+            "llm_preset": llm_key, "embedding_preset": emb_key, "chunk_preset": chunk_key,
+            "retriever_k": k, "retriever_use_bm25": use_bm25, "llm_temperature": temperature,
         }
         with st.spinner("설정 적용 중... (재인덱싱이 필요하면 시간이 걸립니다)"):
-            try:
-                resp = requests.post(f"{BACKEND_URL}/config", json=payload, timeout=1800)
-            except Exception as e:
-                st.error(f"설정 적용 실패: {e}")
-                return
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("reindexed"):
-                st.success("설정 적용 완료 (재인덱싱 수행됨).")
-            else:
-                st.success("설정 적용 완료 (기존 인덱스 재사용).")
+            data = _post("/config", payload, timeout=1800)
+        if data is not None:
+            _fetch_documents.clear()  # 인덱스 바뀌었을 수 있으니 목록 캐시 무효화
+            msg = "재인덱싱 수행됨" if data.get("reindexed") else "기존 인덱스 재사용"
+            st.success(f"설정 적용 완료 ({msg}).")
             st.rerun()
-        else:
-            st.error(f"오류 {resp.status_code}: {resp.text}")
 
 
-# 사이드바: 백엔드 상태 + 문서 목록
+# ──────────────────────────────────────────────
+# 탭 1: RFP 목록 대시보드
+# ──────────────────────────────────────────────
+
+def _tab_documents():
+    st.subheader("RFP 목록")
+    try:
+        docs = _fetch_documents()
+    except Exception as e:
+        st.error(f"문서 목록을 불러올 수 없습니다: {e}")
+        return
+    if not docs:
+        st.info("인덱싱된 문서가 없습니다.")
+        return
+
+    df = pd.DataFrame(docs)
+    # 필터 UI
+    c1, c2, c3 = st.columns([2, 2, 1])
+    orgs = sorted({d.get("기관") for d in docs if d.get("기관")})
+    sel_orgs = c1.multiselect("기관 필터", orgs, placeholder="전체")
+    keyword = c2.text_input("사업명 검색", placeholder="키워드")
+    sort_by = c3.selectbox("정렬", ["마감일", "금액(높은순)", "사업명"])
+
+    view = df.copy()
+    if sel_orgs:
+        view = view[view["기관"].isin(sel_orgs)]
+    if keyword.strip():
+        kw = keyword.strip()
+        view = view[view["사업명"].fillna("").str.contains(kw)
+                    | view["파일명"].fillna("").str.contains(kw)]
+
+    if sort_by == "마감일":
+        view = view.sort_values("마감일", na_position="last")
+    elif sort_by == "금액(높은순)":
+        view = view.sort_values("금액", ascending=False, na_position="last")
+    else:
+        view = view.sort_values("사업명", na_position="last")
+
+    st.caption(f"표시 {len(view)}건 / 전체 {len(df)}건")
+    show = view[["사업명", "기관", "금액", "마감일", "파일형식"]].copy()
+    show["금액"] = show["금액"].apply(_won)
+    st.dataframe(show, use_container_width=True, hide_index=True, height=380)
+
+    # 문서 선택 -> 파일 링크 + 요약 바로가기
+    st.divider()
+    names = view["파일명"].tolist()
+    if names:
+        sel = st.selectbox("문서 선택(상세/요약)", names,
+                           format_func=lambda fn: _label_of(docs, fn))
+        st.markdown(_file_links(sel), unsafe_allow_html=True)
+        if st.button("요약 대상으로 지정", type="primary"):
+            st.session_state.selected_doc = sel
+            st.success("‘요약’ 탭에서 이 문서가 선택됩니다. 요약 탭으로 이동하세요.")
+
+
+def _label_of(docs, fn):
+    for d in docs:
+        if d.get("파일명") == fn:
+            return f"{d.get('사업명') or fn}  ·  {d.get('기관') or '미상'}"
+    return fn
+
+
+# ──────────────────────────────────────────────
+# 탭 2: 원클릭 요약 카드
+# ──────────────────────────────────────────────
+
+_SUMMARY_Q = "이 RFP의 핵심을 대상 기관·예산·마감일·핵심 요구조건·제출 방식으로 정리해줘."
+
+
+def _tab_summary():
+    st.subheader("RFP 요약")
+    try:
+        docs = _fetch_documents()
+    except Exception as e:
+        st.error(f"문서 목록을 불러올 수 없습니다: {e}")
+        return
+    if not docs:
+        st.info("인덱싱된 문서가 없습니다.")
+        return
+
+    names = [d.get("파일명") for d in docs]
+    default = st.session_state.get("selected_doc")
+    idx = names.index(default) if default in names else 0
+    sel = st.selectbox("문서 선택", names, index=idx,
+                       format_func=lambda fn: _label_of(docs, fn))
+
+    if "summaries" not in st.session_state:
+        st.session_state.summaries = {}
+
+    col1, col2 = st.columns([1, 3])
+    if col1.button("요약 생성", type="primary"):
+        with st.spinner("요약 생성 중..."):
+            data = _post("/summarize", {"question": _SUMMARY_Q, "filename": sel})
+        if data is not None:
+            st.session_state.summaries[sel] = data
+    col2.markdown(_file_links(sel), unsafe_allow_html=True)
+
+    data = st.session_state.summaries.get(sel)
+    if data:
+        with st.container(border=True):
+            _render_answer(data)
+    else:
+        st.caption("‘요약 생성’을 누르면 이 문서만 근거로 4대 항목 요약을 만듭니다.")
+
+
+# ──────────────────────────────────────────────
+# 탭 3: QA (대화)
+# ──────────────────────────────────────────────
+
+def _tab_qa():
+    st.subheader("질의응답 (QA)")
+    if "turns" not in st.session_state:
+        st.session_state.turns = []
+
+    if st.session_state.turns:
+        cols = st.columns([3, 1])
+        cols[0].caption(f"대화 {len(st.session_state.turns)}턴")
+        if cols[1].button("대화 초기화", use_container_width=True):
+            st.session_state.turns = []
+            st.rerun()
+        for turn in st.session_state.turns:
+            with st.chat_message("user"):
+                st.markdown(turn["question"])
+            with st.chat_message("assistant"):
+                _render_answer(turn["data"])
+
+    question = st.chat_input("예: 한국대학스포츠협의회 사업의 평가 배점 기준은?")
+    if question:
+        history = [(t["question"], t["data"].get("answer", ""))
+                   for t in st.session_state.turns]
+        with st.spinner("답변 생성 중..."):
+            data = _post("/chat", {"question": question, "history": history})
+        if data is not None:
+            st.session_state.turns.append({"question": question, "data": data})
+            st.rerun()
+
+
+# ──────────────────────────────────────────────
+# 레이아웃
+# ──────────────────────────────────────────────
+
 with st.sidebar:
     st.header("상태")
     try:
@@ -151,70 +307,13 @@ with st.sidebar:
             st.warning(f"백엔드 준비 중: {h}")
     except Exception as e:
         st.error(f"백엔드에 연결할 수 없습니다.\n{BACKEND_URL}\n{e}")
-
-    if st.button("문서 목록 불러오기"):
-        try:
-            d = requests.get(f"{BACKEND_URL}/documents", timeout=10).json()
-            st.caption(f"인덱싱 문서 {d.get('count', 0)}건")
-            st.dataframe(d.get("documents", []), use_container_width=True)
-        except Exception as e:
-            st.error(f"문서 목록 조회 실패: {e}")
-
     st.divider()
     _render_settings_panel()
 
-
-# 본문: 모드 선택 + 질문 입력
-mode = st.radio("모드", ["QA (질문답변)", "요약"], horizontal=True)
-endpoint = "/chat" if mode.startswith("QA") else "/summarize"
-
-# 대화 기록(턴 단위)을 세션에 보관해 재실행 후에도 유지하고, 백엔드에 히스토리로 전달한다.
-# 각 턴: {"mode", "question", "data"(백엔드 응답: answer/sources)}
-if "turns" not in st.session_state:
-    st.session_state.turns = []
-
-# 지난 대화를 채팅 형태로 표시(사용자 질문 + 답변 + 근거 출처/파일 링크)
-if st.session_state.turns:
-    cols = st.columns([3, 1])
-    cols[0].caption(f"대화 {len(st.session_state.turns)}턴")
-    if cols[1].button("대화 초기화", use_container_width=True):
-        st.session_state.turns = []
-        st.rerun()
-    for turn in st.session_state.turns:
-        with st.chat_message("user"):
-            st.markdown(f"**[{turn['mode']}]** {turn['question']}")
-        with st.chat_message("assistant"):
-            _render_answer(turn["data"])
-
-placeholder = (
-    "예: 이 사업의 평가 배점 기준은?"
-    if endpoint == "/chat"
-    else "예: 고려대학교 차세대 포털 학사 정보시스템 사업을 요약해줘"
-)
-question = st.text_area("질문 / 요청", placeholder=placeholder, height=100)
-
-if st.button("실행", type="primary"):
-    if not question.strip():
-        st.warning("질문을 입력하세요.")
-    else:
-        # 백엔드에 보낼 히스토리: 지난 턴들의 (질문, 답변) 쌍
-        history = [
-            (t["question"], t["data"].get("answer", ""))
-            for t in st.session_state.turns
-        ]
-        with st.spinner("백엔드에 요청 중..."):
-            try:
-                resp = requests.post(
-                    f"{BACKEND_URL}{endpoint}",
-                    json={"question": question, "history": history},
-                    timeout=120,
-                )
-                if resp.status_code == 200:
-                    st.session_state.turns.append(
-                        {"mode": mode, "question": question, "data": resp.json()}
-                    )
-                    st.rerun()
-                else:
-                    st.error(f"오류 {resp.status_code}: {resp.text}")
-            except Exception as e:
-                st.error(f"요청 실패: {e}")
+tab_list, tab_summary, tab_qa = st.tabs(["RFP 목록", "요약", "QA"])
+with tab_list:
+    _tab_documents()
+with tab_summary:
+    _tab_summary()
+with tab_qa:
+    _tab_qa()
