@@ -27,7 +27,7 @@
     !pip install pymupdf pyhwp langchain-text-splitters pdfplumber hwp-hwpx-parser olefile -q
 
 셀 3) 이 파일 실행
-    exec(open('/content/drive/MyDrive/codeit_mission/experiments/chunking_experiment.py').read())
+    exec(open('/content/drive/MyDrive/codeit_mission/중급프로젝트/experiments/chunking_experiment.py').read())
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -39,9 +39,9 @@ import matplotlib.pyplot as plt
 
 # ── 경로 설정 ────────────────────────────────────────
 # ⚠️ 본인 드라이브 경로 다르면 여기만 수정
-BASE      = '/content/drive/MyDrive/codeit_mission'
-CSV_PATH  = f"{BASE}/원본 데이터/data_list.csv"
-FILES_DIR = f"{BASE}/원본 데이터/files"
+BASE      = '/content/drive/MyDrive/codeit_mission/중급프로젝트'
+CSV_PATH  = '/content/drive/MyDrive/codeit_mission/원본 데이터/data_list.csv'
+FILES_DIR = '/content/drive/MyDrive/codeit_mission/원본 데이터/files'
 
 if BASE not in sys.path:
     sys.path.insert(0, BASE)
