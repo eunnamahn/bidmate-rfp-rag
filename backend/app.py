@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src import catalog
@@ -201,6 +204,29 @@ def set_config(update: ConfigUpdate) -> Dict[str, Any]:
         "settings": _current_settings(),
         "catalog": catalog.frontend_catalog(new_cfg),
     }
+
+
+@app.get("/file")
+def get_file(name: str, download: bool = False) -> FileResponse:
+    """근거 RFP 원본 파일을 서빙한다.
+
+    download=false면 인라인(PDF는 브라우저에서 바로 보기, HWP는 브라우저가 받음),
+    download=true면 첨부(다운로드)로 내려준다.
+    name은 data/files 안의 파일명만 허용한다(경로 탈출 차단).
+    """
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
+    base = Path(cfg["data"]["files"]).resolve()
+    target = (base / name).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+
+    disposition = "attachment" if download else "inline"
+    # 한글/공백 파일명은 RFC 5987(filename*)로 인코딩한다.
+    encoded = quote(name)
+    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded}"}
+    return FileResponse(str(target), headers=headers)
 
 
 @app.get("/documents")

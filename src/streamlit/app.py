@@ -9,6 +9,7 @@
 """
 
 import os
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -31,12 +32,23 @@ def _render_sources(sources):
         return
     st.markdown("**근거 출처**")
     for i, s in enumerate(sources, 1):
-        파일명 = s.get("파일명") or "(파일명 없음)"
+        파일명 = s.get("파일명")
+        표시명 = 파일명 or "(파일명 없음)"
         기관 = s.get("기관") or "미상"
         st.markdown(
-            f"{i}. **{파일명}**  \n"
+            f"{i}. **{표시명}**  \n"
             f"   - 기관: {기관} · 사업금액: {_won(s.get('금액'))} · 마감일: {s.get('마감일') or '미상'}"
         )
+        if 파일명:
+            q = quote(파일명)
+            view_url = f"{BACKEND_URL}/file?name={q}"
+            dl_url = f"{BACKEND_URL}/file?name={q}&download=1"
+            # 새 탭에서 열리도록 HTML 링크로 렌더링한다.
+            st.markdown(
+                f"&nbsp;&nbsp;&nbsp;<a href='{view_url}' target='_blank'>파일 보기</a> · "
+                f"<a href='{dl_url}' target='_blank'>다운로드</a>",
+                unsafe_allow_html=True,
+            )
 
 
 def _render_answer(data):
@@ -163,6 +175,10 @@ placeholder = (
 )
 question = st.text_area("질문 / 요청", placeholder=placeholder, height=100)
 
+# 대화 기록은 세션 상태에 보관해 재실행(rerun) 후에도 유지한다.
+if "history" not in st.session_state:
+    st.session_state.history = []
+
 if st.button("실행", type="primary"):
     if not question.strip():
         st.warning("질문을 입력하세요.")
@@ -175,8 +191,24 @@ if st.button("실행", type="primary"):
                     timeout=120,
                 )
                 if resp.status_code == 200:
-                    _render_answer(resp.json())
+                    st.session_state.history.append(
+                        {"mode": mode, "question": question, "data": resp.json()}
+                    )
+                    st.rerun()
                 else:
                     st.error(f"오류 {resp.status_code}: {resp.text}")
             except Exception as e:
                 st.error(f"요청 실패: {e}")
+
+# 대화 기록 표시 (최신이 위로). 기록은 세션 동안 유지된다.
+if st.session_state.history:
+    head = st.columns([3, 1])
+    head[0].subheader("대화 기록")
+    if head[1].button("기록 지우기", use_container_width=True):
+        st.session_state.history = []
+        st.rerun()
+
+    for item in reversed(st.session_state.history):
+        with st.container(border=True):
+            st.markdown(f"**[{item['mode']}] {item['question']}**")
+            _render_answer(item["data"])
