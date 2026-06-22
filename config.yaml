@@ -1,0 +1,35 @@
+# 입찰메이트 RFP RAG 베이스라인 설정
+# 교체 축(임베딩/LLM/청킹/검색)을 이 파일 한 곳에서 스위치한다.
+
+data:
+  csv: data/data_list.csv
+  files: data/files
+  faiss_cache: data/faiss_rfp
+
+parser:
+  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존)
+  pdf: pymupdf                # pymupdf(빠름/안정) | pdfplumber(표 정밀)
+
+embedding:
+  provider: openai            # openai | huggingface
+  model: text-embedding-3-small
+
+llm:
+  provider: openai            # openai | ollama
+  model: gpt-5-nano           # 이 키는 gpt-4o-mini RPM=0이라 접근 가능한 gpt-5-nano 사용
+  temperature: 0
+  base_url:                   # ollama 원격 사용 시 GCP VM 주소 (예: http://34.x.x.x:11434)
+
+chunk:
+  strategy: recursive         # recursive | section
+  size: 500
+  overlap: 50
+
+retriever:
+  k: 4
+  use_bm25: false
+  use_reranker: false
+
+eval:
+  golden_set: src/evaluation/golden_set.json
+  k: 4

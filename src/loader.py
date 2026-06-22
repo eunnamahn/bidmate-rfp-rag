@@ -1,0 +1,284 @@
+"""원본 파일 파싱 + 전처리 + Document 변환.
+
+핵심 원칙: 본문 소스로 메타데이터의 '텍스트' 컬럼을 쓰지 않고 원본 파일을 직접 재파싱한다.
+('텍스트' 컬럼은 원본의 앞부분 발췌본이라 분량이 부족하다.)
+파서는 config.yaml의 parser.hwp / parser.pdf로 교체할 수 있다(교체 축).
+기본값은 안정/속도 우선으로 HWP=pyhwp, PDF=pymupdf이며,
+표 마크다운 정밀 보존이 필요하면 hwp-hwpx-parser / pdfplumber로 바꾼다.
+"""
+
+from __future__ import annotations
+
+import re
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+from langchain_core.documents import Document
+
+# 파일당 파싱 타임아웃(초). 초과 시 해당 문서는 fallback 처리한다.
+PARSE_TIMEOUT = 60
+# 추출 글자수가 이 값 미만이면 스캔본/추출실패 가능성으로 표시한다.
+MIN_CHARS = 1000
+
+# 제어문자 제거용 (탭/개행은 보존)
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# 깨진 특수문자: 유니코드 치환문자(U+FFFD)와 사용자정의영역(U+E000~U+F8FF)
+_BROKEN = re.compile("[\ufffd\ue000-\uf8ff]")
+# 목차로 보이는 줄: '항목 ........ 12' 형태(점/공백 다수 + 끝 페이지번호)
+_TOC_LINE = re.compile(r"^.{0,80}?[.·…‧\s]{4,}\d{1,4}\s*$", re.MULTILINE)
+
+
+# =====================================================================
+# 파서 구현부 (교체 축)
+# 새 파서를 추가하려면 함수를 만들고 아래 HWP_PARSERS / PDF_PARSERS에 등록한다.
+# config.yaml의 parser.hwp / parser.pdf 값으로 선택된다.
+# =====================================================================
+
+def _parse_hwp_hwpx_parser(path: Path) -> str:
+    """HWP/HWPX 파서: hwp-hwpx-parser. 본문 + 표(마크다운)를 보존한다."""
+    from hwp_hwpx_parser import Reader
+
+    with Reader(str(path)) as r:
+        body = r.text or ""
+        # get_tables_as_markdown()는 표별 마크다운 문자열의 리스트를 반환한다.
+        tables = r.get_tables_as_markdown() or []
+    tables_md = "\n\n".join(tables)
+    # 평가배점·요구사항·제출서류 등 핵심 정보가 표에 있으므로 마크다운으로 보존한다.
+    return (body + "\n\n" + tables_md).strip()
+
+
+def _parse_hwp_pyhwp(path: Path) -> str:
+    """HWP 파서(대안): pyhwp의 hwp5txt. 텍스트만 추출(표 구조 보존 약함, 빠름).
+
+    설치: pip install pyhwp
+    """
+    import subprocess
+
+    out = subprocess.run(
+        ["hwp5txt", str(path)], capture_output=True, timeout=PARSE_TIMEOUT
+    )
+    return out.stdout.decode("utf-8", "replace").strip()
+
+
+def _parse_pdf_pdfplumber(path: Path) -> str:
+    """PDF 파서: pdfplumber. 페이지 텍스트 + 표(마크다운)를 추출한다."""
+    import pdfplumber
+
+    parts: List[str] = []
+    with pdfplumber.open(str(path)) as pdf:
+        for page in pdf.pages:
+            parts.append(page.extract_text() or "")
+            for table in page.extract_tables():
+                md = _table_to_markdown(table)
+                if md:
+                    parts.append(md)
+    return "\n".join(parts).strip()
+
+
+def _parse_pdf_pymupdf(path: Path) -> str:
+    """PDF 파서: PyMuPDF(fitz). 텍스트가 매우 빠르고 대형/복잡 PDF에도 안정적.
+
+    표는 find_tables().to_markdown()으로 마크다운 보존을 시도한다.
+    설치: pip install pymupdf
+    """
+    import fitz
+
+    parts: List[str] = []
+    doc = fitz.open(str(path))
+    try:
+        for page in doc:
+            parts.append(page.get_text() or "")
+            try:
+                for table in page.find_tables().tables:
+                    md = table.to_markdown()
+                    if md:
+                        parts.append(md)
+            except Exception:
+                # 특정 페이지 표 탐지 실패는 무시하고 본문은 유지한다.
+                pass
+    finally:
+        doc.close()
+    return "\n".join(parts).strip()
+
+
+# 파서 레지스트리: 이름 -> 추출 함수
+HWP_PARSERS = {
+    "hwp-hwpx-parser": _parse_hwp_hwpx_parser,
+    "pyhwp": _parse_hwp_pyhwp,
+}
+PDF_PARSERS = {
+    "pdfplumber": _parse_pdf_pdfplumber,
+    "pymupdf": _parse_pdf_pymupdf,
+}
+
+
+def make_hwp_parser(name: str):
+    """이름으로 HWP 파서 함수를 반환한다."""
+    if name not in HWP_PARSERS:
+        raise ValueError(
+            f"지원하지 않는 hwp 파서: {name} (가능: {list(HWP_PARSERS)})"
+        )
+    return HWP_PARSERS[name]
+
+
+def make_pdf_parser(name: str):
+    """이름으로 PDF 파서 함수를 반환한다."""
+    if name not in PDF_PARSERS:
+        raise ValueError(
+            f"지원하지 않는 pdf 파서: {name} (가능: {list(PDF_PARSERS)})"
+        )
+    return PDF_PARSERS[name]
+
+
+def _table_to_markdown(table: List[List[Optional[str]]]) -> str:
+    """pdfplumber가 추출한 2차원 표를 마크다운 표로 변환한다."""
+    rows = [["" if c is None else str(c).replace("\n", " ") for c in row]
+            for row in table if row]
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    header = rows[0] + [""] * (width - len(rows[0]))
+    lines = ["| " + " | ".join(header) + " |",
+             "| " + " | ".join("---" for _ in range(width)) + " |"]
+    for row in rows[1:]:
+        cells = row + [""] * (width - len(row))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _parse_with_timeout(func, path: Path, timeout: int) -> str:
+    """파일 파싱을 타임아웃과 함께 실행한다.
+
+    윈도우에서는 signal 기반 타임아웃을 쓸 수 없어 스레드로 처리한다.
+    타임아웃 시 작업 스레드는 백그라운드에 남지만 호출자는 즉시 예외를 받는다.
+    (context manager를 쓰면 종료 시 멈춘 스레드를 기다려 타임아웃이 무력화되므로
+     shutdown(wait=False)로 즉시 반환한다.)
+    """
+    ex = ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(func, path)
+    try:
+        return future.result(timeout=timeout)
+    finally:
+        ex.shutdown(wait=False)
+
+
+def _clean(text: str) -> str:
+    """제어문자·깨진 특수문자·목차 블록을 제거하고 공백을 정리한다."""
+    text = _CTRL.sub(" ", text)
+    text = _BROKEN.sub("", text)
+    text = _TOC_LINE.sub("", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _clean_field(value: Any) -> Optional[str]:
+    """메타데이터 문자열 필드를 정리한다(결측은 None)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    s = str(value).strip()
+    return s or None
+
+
+def _parse_amount(value: Any) -> Optional[int]:
+    """사업금액을 정수로 변환한다. 0원/결측은 미기재로 보고 None 처리한다."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    digits = re.sub(r"[^\d]", "", str(value))
+    if not digits:
+        return None
+    amount = int(digits)
+    return None if amount == 0 else amount
+
+
+def _parse_date(value: Any) -> Optional[str]:
+    """마감일을 datetime으로 파싱해 ISO 날짜 문자열(YYYY-MM-DD)로 반환한다."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.date().isoformat()
+
+
+def _build_metadata(row: pd.Series, filename: str, fmt: str,
+                    likely_scanned: bool, fallback_used: bool) -> Dict[str, Any]:
+    """청크가 상속할 Document 메타데이터를 구성한다."""
+    return {
+        "파일명": filename,
+        "기관": _clean_field(row.get("발주기관")),
+        "금액": _parse_amount(row.get("사업금액")),
+        "마감일": _parse_date(row.get("입찰참여마감일")),
+        "파일형식": fmt,
+        "likely_scanned": likely_scanned,
+        "fallback_used": fallback_used,
+        # 참고용 보조 필드
+        "사업명": _clean_field(row.get("사업명")),
+        "공고번호": _clean_field(row.get("공고번호")),
+    }
+
+
+def _is_hwp(filename: str, fmt: str) -> bool:
+    return filename.lower().endswith((".hwp", ".hwpx")) or "hwp" in fmt
+
+
+def _is_pdf(filename: str, fmt: str) -> bool:
+    return filename.lower().endswith(".pdf") or "pdf" in fmt
+
+
+def load_documents(cfg: Dict[str, Any]) -> List[Document]:
+    """data_list.csv를 읽고 각 행의 원본 파일을 파싱해 Document 리스트로 반환한다.
+
+    파싱 실패/타임아웃이 나도 진행을 멈추지 않고 fallback_used=True로 표시한다.
+    """
+    csv_path = Path(cfg["data"]["csv"])
+    files_dir = Path(cfg["data"]["files"])
+    df = pd.read_csv(csv_path)
+    # 실제 CSV 컬럼명에 공백이 있다(예: '사업 금액'). 공백을 제거해 정규화한다.
+    df.columns = [str(c).replace(" ", "") for c in df.columns]
+
+    # config로 파서 선택(교체 축). 기본값은 베이스라인 파서.
+    parser_cfg = cfg.get("parser", {})
+    hwp_parser = make_hwp_parser(parser_cfg.get("hwp", "hwp-hwpx-parser"))
+    pdf_parser = make_pdf_parser(parser_cfg.get("pdf", "pdfplumber"))
+
+    docs: List[Document] = []
+    for _, row in df.iterrows():
+        filename = str(row["파일명"])
+        path = files_dir / filename
+        fmt = str(row.get("파일형식", "")).lower()
+
+        text = ""
+        fallback_used = False
+        if path.exists():
+            try:
+                if _is_hwp(filename, fmt):
+                    text = _parse_with_timeout(hwp_parser, path, PARSE_TIMEOUT)
+                elif _is_pdf(filename, fmt):
+                    text = _parse_with_timeout(pdf_parser, path, PARSE_TIMEOUT)
+                else:
+                    # 확장자/형식 불명 시 PDF 파서로 시도
+                    text = _parse_with_timeout(pdf_parser, path, PARSE_TIMEOUT)
+            except (FuturesTimeout, Exception):
+                # 실패해도 중단하지 않는다. 본문은 비우고 플래그만 남긴다.
+                # ('텍스트' 컬럼으로 대체하지 않는다 — 발췌본이라 본문 소스 부적합)
+                text = ""
+                fallback_used = True
+        else:
+            fallback_used = True
+
+        cleaned = _clean(text) if text else ""
+        likely_scanned = len(cleaned) < MIN_CHARS
+
+        docs.append(
+            Document(
+                page_content=cleaned,
+                metadata=_build_metadata(
+                    row, filename, fmt, likely_scanned, fallback_used
+                ),
+            )
+        )
+    return docs

@@ -1,0 +1,27 @@
+# 설치는 패키지별로 한 줄씩 진행할 것.
+# 예: pip install langchain
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+faiss-cpu
+pandas
+pyyaml
+python-dotenv
+rank-bm25
+# 백엔드(FastAPI) + 프론트(Streamlit) 구동
+fastapi
+uvicorn[standard]
+streamlit
+requests
+# 파서(기본): 대형/복잡 문서에도 안정적이고 빠름
+pymupdf
+pyhwp
+# 파서(대안): 표 마크다운 정밀 보존이 필요할 때 (config.yaml에서 선택)
+pdfplumber
+hwp-hwpx-parser
+# 로컬 모델 실험 시에만 필요 (베이스라인에서는 선택)
+langchain-huggingface
+langchain-ollama
+sentence-transformers

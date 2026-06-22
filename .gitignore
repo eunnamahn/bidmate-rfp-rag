@@ -1,0 +1,17 @@
+# 환경 변수 (API 키 포함)
+.env
+
+# 저장된 벡터스토어 캐시
+data/faiss_rfp/
+
+# 원본 데이터/메타데이터 (저장소는 코드만, 데이터는 직접 배치)
+data/files/
+data/data_list.csv
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 가상환경
+.venv/
+venv/
