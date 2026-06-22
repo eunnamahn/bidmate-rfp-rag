@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -39,6 +39,7 @@ _STATE: Dict[str, Any] = {}
 
 class ChatRequest(BaseModel):
     question: str
+    history: List[Tuple[str, str]] = []
 
 
 class ConfigUpdate(BaseModel):
@@ -160,11 +161,13 @@ def _dedup_sources(docs) -> List[Source]:
     return out
 
 
-def _answer(mode: str, question: str) -> ChatResponse:
+def _answer(mode: str, question: str, history: list = []) -> ChatResponse:
     if "retriever" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
     answer, docs = generate_answer(
-        _STATE["retriever"], _STATE["llm"], question, mode=mode
+        _STATE["retriever"], _STATE["llm"], question,
+        mode=mode,
+        history=history,
     )
     return ChatResponse(
         answer=answer,
@@ -228,9 +231,8 @@ def documents() -> Dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _answer("qa", req.question)
-
+    return _answer("qa", req.question, req.history)
 
 @app.post("/summarize", response_model=ChatResponse)
 def summarize(req: ChatRequest) -> ChatResponse:
-    return _answer("summary", req.question)
+    return _answer("summary", req.question, req.history)
