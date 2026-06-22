@@ -11,7 +11,8 @@ config.yaml의 history.strategy로 전환한다.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -142,6 +143,65 @@ def rewrite_query(question: str, history: List[Tuple[str, str]], llm) -> str:
 
 
 # ══════════════════════════════════════════════════════
+# 근거 인용(citation) 처리
+# ══════════════════════════════════════════════════════
+
+# 답변이 이 표지를 포함하면 전체 거절로 보고 출처를 표시하지 않는다.
+_REFUSAL_MARK = "확인할 수 없습니다"
+# "[사용근거: 1, 3]" 형태에서 번호를 뽑는다.
+_CITATION_RE = re.compile(r"사용\s*근거\s*[:：]?\s*([0-9,，\s]+)")
+
+
+def _number_sources(docs: List[Document]) -> Tuple[Dict[str, int], List[Document]]:
+    """검색 문서를 파일명 기준으로 중복 제거하며 1부터 번호를 매긴다.
+
+    반환: (파일명->번호 매핑, 번호순 대표 Document 리스트)
+    """
+    order: Dict[str, int] = {}
+    unique: List[Document] = []
+    for d in docs:
+        fn = d.metadata.get("파일명")
+        if fn not in order:
+            order[fn] = len(unique) + 1
+            unique.append(d)
+    return order, unique
+
+
+def _format_labeled(docs: List[Document], order: Dict[str, int]) -> str:
+    """각 청크 앞에 [자료 N] 라벨을 붙여 문맥 문자열을 만든다(N=파일명별 번호)."""
+    parts = []
+    for d in docs:
+        n = order.get(d.metadata.get("파일명"))
+        parts.append(f"[자료 {n}]\n{d.page_content}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _parse_citation(text: str) -> List[int]:
+    """답변에서 실제로 인용한 자료 번호를 뽑는다(없으면 빈 리스트).
+
+    '[사용근거: 1, 2]'와 모델이 즐겨 쓰는 '[출처: 자료 1]'/'(문서: 자료 1)'
+    같은 인라인 표기를 모두 인식한다.
+    """
+    nums: set = set()
+    m = _CITATION_RE.search(text)
+    if m:
+        nums.update(int(x) for x in re.findall(r"\d+", m.group(1)))
+    # "자료 N" 형태로 본문에서 참조한 번호도 사용한 것으로 본다.
+    nums.update(int(x) for x in re.findall(r"자료\s*(\d+)", text))
+    return sorted(nums)
+
+
+def _strip_citation(text: str) -> str:
+    """답변 본문에서 인용 표기를 제거한다('[사용근거: ...]', '[출처: 자료 N]' 등)."""
+    text = re.sub(r"\[?\s*사용\s*근거\s*[:：][^\]\n]*\]?", "", text)
+    # "[출처: 자료 1]", "(문서: 자료 1)" 같은 인라인 표기 제거
+    text = re.sub(r"[\[(]\s*(?:출처|문서)\s*[:：]?\s*자료\s*\d+\s*[\])]", "", text)
+    # 정제 후 남는 빈 괄호/연속 공백 정리
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return text.strip()
+
+
+# ══════════════════════════════════════════════════════
 # 핵심 함수
 # ══════════════════════════════════════════════════════
 
@@ -161,7 +221,8 @@ def generate_answer(
     """
     history = history or []
     strategy = strategy or HISTORY_STRATEGY
-    prompt = QA_PROMPT if mode == "qa" else SUMMARY_PROMPT
+    system_text = _SYSTEM_QA if mode == "qa" else _SYSTEM_SUMMARY
+    ask_label, ans_label = ("질문", "답변") if mode == "qa" else ("요청", "정리")
 
     # rewrite 전략: 후속 질문을 완성형으로 재작성한 뒤 검색(검색 품질 향상)
     if strategy == "rewrite" and history:
@@ -170,24 +231,38 @@ def generate_answer(
         search_query = question
 
     docs = retriever.invoke(search_query)
-    context = _format_docs(docs)
+    # 검색 문서에 [자료 N] 번호를 붙이고, 답변에서 실제 인용한 번호만 출처로 남긴다.
+    order, unique_docs = _number_sources(docs)
+    context = _format_labeled(docs, order)
+
+    user_content = (
+        f"문맥:\n{context}\n\n{ask_label}: {question}\n{ans_label}:\n"
+        "(답변 맨 마지막 줄에, 실제로 근거로 사용한 자료 번호만 '[사용근거: 1, 2]' "
+        "형식으로 적으세요. 사용하지 않은 자료 번호는 절대 넣지 마세요.)"
+    )
 
     # full 전략: 히스토리를 메시지로 통째로 포함해 문맥 유지
+    messages = [{"role": "system", "content": system_text}]
     if strategy == "full" and history:
-        messages = [{"role": "system", "content": prompt.messages[0].prompt.template}]
         for user_msg, assistant_msg in history[-MAX_HISTORY_TURNS:]:
             messages.append({"role": "user", "content": user_msg})
             messages.append({"role": "assistant", "content": assistant_msg})
-        messages.append({
-            "role": "user",
-            "content": f"문맥:\n{context}\n\n질문: {question}\n답변:",
-        })
-        answer = getattr(llm.invoke(messages), "content", "")
-    else:
-        chain = prompt | llm | StrOutputParser()
-        answer = chain.invoke({"context": context, "question": question})
+    messages.append({"role": "user", "content": user_content})
 
-    return answer, docs
+    raw = getattr(llm.invoke(messages), "content", "")
+    cited = _parse_citation(raw)
+    answer = _strip_citation(raw)
+
+    # 출처 선정: 인용한 번호만 -> (인용 없으면) 거절이면 없음, 아니면 전체로 폴백
+    if cited:
+        used = [unique_docs[n - 1] for n in cited if 1 <= n <= len(unique_docs)]
+        used = used or unique_docs
+    elif _REFUSAL_MARK in answer:
+        used = []
+    else:
+        used = unique_docs
+
+    return answer, used
 
 
 def build_chain(retriever, llm, mode: str = "qa"):
