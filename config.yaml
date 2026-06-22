@@ -29,6 +29,7 @@ retriever:
   k: 4
   use_bm25: false
   use_reranker: false
+  use_metadata_filter: true   # 질문에 기관명이 있으면 그 기관 문서로만 한정해 검색
 
 eval:
   golden_set: src/evaluation/golden_set.json

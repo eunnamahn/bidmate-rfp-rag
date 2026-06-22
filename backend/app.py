@@ -32,7 +32,12 @@ from src.embedding import build_vectorstore, cache_exists, make_cache_key
 from src.evaluation.evaluate import REFUSAL_MARK
 from src.generator import generate_answer
 from src.loader import load_documents
-from src.retriever import build_retriever
+from src.retriever import (
+    build_org_filtered_retriever,
+    build_retriever,
+    known_orgs,
+    match_orgs,
+)
 
 app = FastAPI(title="입찰메이트 RFP RAG API")
 
@@ -100,6 +105,8 @@ def _rebuild(cfg: Dict[str, Any]) -> bool:
         retriever=retriever,
         llm=llm,
         cache_key=cache_key,
+        known_orgs=known_orgs(vectorstore),
+        n_vectors=vectorstore.index.ntotal,
     )
     return not have_cache
 
@@ -165,12 +172,28 @@ def _dedup_sources(docs) -> List[Source]:
     return out
 
 
+def _select_retriever(question: str):
+    """질문에 기관명이 있으면 메타데이터 필터 검색기를, 아니면 기본 검색기를 쓴다."""
+    retriever = _STATE["retriever"]
+    cfg = _STATE["cfg"]
+    if not cfg["retriever"].get("use_metadata_filter", True):
+        return retriever
+    matched = match_orgs(question, _STATE.get("known_orgs", set()))
+    if matched:
+        # 특정 기관 관련 질문 -> 그 기관 문서로만 한정해 정확도/누락을 개선한다.
+        return build_org_filtered_retriever(
+            _STATE["vectorstore"], cfg["retriever"].get("k", 4),
+            matched, _STATE.get("n_vectors", 10000),
+        )
+    return retriever
+
+
 def _answer(mode: str, question: str,
             history: Optional[List[Tuple[str, str]]] = None) -> ChatResponse:
     if "retriever" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
     answer, docs = generate_answer(
-        _STATE["retriever"], _STATE["llm"], question,
+        _select_retriever(question), _STATE["llm"], question,
         mode=mode, history=history or [],
     )
     return ChatResponse(
