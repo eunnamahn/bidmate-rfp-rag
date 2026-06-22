@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src import catalog
@@ -39,6 +42,7 @@ _STATE: Dict[str, Any] = {}
 
 class ChatRequest(BaseModel):
     question: str
+    # 대화 히스토리: [(사용자질문, 어시스턴트답변), ...]. 멀티턴 문맥 유지용.
     history: List[Tuple[str, str]] = []
 
 
@@ -161,13 +165,13 @@ def _dedup_sources(docs) -> List[Source]:
     return out
 
 
-def _answer(mode: str, question: str, history: list = []) -> ChatResponse:
+def _answer(mode: str, question: str,
+            history: Optional[List[Tuple[str, str]]] = None) -> ChatResponse:
     if "retriever" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
     answer, docs = generate_answer(
         _STATE["retriever"], _STATE["llm"], question,
-        mode=mode,
-        history=history,
+        mode=mode, history=history or [],
     )
     return ChatResponse(
         answer=answer,
@@ -206,6 +210,29 @@ def set_config(update: ConfigUpdate) -> Dict[str, Any]:
     }
 
 
+@app.get("/file")
+def get_file(name: str, download: bool = False) -> FileResponse:
+    """근거 RFP 원본 파일을 서빙한다.
+
+    download=false면 인라인(PDF는 브라우저에서 바로 보기, HWP는 브라우저가 받음),
+    download=true면 첨부(다운로드)로 내려준다.
+    name은 data/files 안의 파일명만 허용한다(경로 탈출 차단).
+    """
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
+    base = Path(cfg["data"]["files"]).resolve()
+    target = (base / name).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+
+    disposition = "attachment" if download else "inline"
+    # 한글/공백 파일명은 RFC 5987(filename*)로 인코딩한다.
+    encoded = quote(name)
+    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded}"}
+    return FileResponse(str(target), headers=headers)
+
+
 @app.get("/documents")
 def documents() -> Dict[str, Any]:
     """인덱싱된 문서 목록을 파일명 단위로 반환한다."""
@@ -232,6 +259,7 @@ def documents() -> Dict[str, Any]:
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     return _answer("qa", req.question, req.history)
+
 
 @app.post("/summarize", response_model=ChatResponse)
 def summarize(req: ChatRequest) -> ChatResponse:

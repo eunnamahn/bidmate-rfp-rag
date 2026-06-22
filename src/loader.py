@@ -27,6 +27,8 @@ MIN_CHARS = 1000
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # 깨진 특수문자: 유니코드 치환문자(U+FFFD)와 사용자정의영역(U+E000~U+F8FF)
 _BROKEN = re.compile("[\ufffd\ue000-\uf8ff]")
+# HWP 파싱 아티팩트: <표>, <그림>, <표 ...>, </그림> 등 태그(EDA: 문서당 평균 2,436자)
+_HWP_TAG = re.compile(r"</?(?:표|그림)[^>]*>")
 # 목차로 보이는 줄: '항목 ........ 12' 형태(점/공백 다수 + 끝 페이지번호)
 _TOC_LINE = re.compile(r"^.{0,80}?[.·…‧\s]{4,}\d{1,4}\s*$", re.MULTILINE)
 
@@ -166,9 +168,12 @@ def _parse_with_timeout(func, path: Path, timeout: int) -> str:
 
 
 def _clean(text: str) -> str:
-    """제어문자·깨진 특수문자·목차 블록을 제거하고 공백을 정리한다."""
+    """줄바꿈 통일 + 제어문자·깨진 특수문자·HWP 태그·목차 블록 제거 + 공백 정리."""
+    # \r\n, \r를 \n으로 통일(HWP 줄바꿈 정규화). 이후 정규식이 \n 기준으로 동작한다.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _CTRL.sub(" ", text)
     text = _BROKEN.sub("", text)
+    text = _HWP_TAG.sub("", text)
     text = _TOC_LINE.sub("", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

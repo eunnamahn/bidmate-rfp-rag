@@ -9,6 +9,7 @@
 """
 
 import os
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -31,12 +32,23 @@ def _render_sources(sources):
         return
     st.markdown("**근거 출처**")
     for i, s in enumerate(sources, 1):
-        파일명 = s.get("파일명") or "(파일명 없음)"
+        파일명 = s.get("파일명")
+        표시명 = 파일명 or "(파일명 없음)"
         기관 = s.get("기관") or "미상"
         st.markdown(
-            f"{i}. **{파일명}**  \n"
+            f"{i}. **{표시명}**  \n"
             f"   - 기관: {기관} · 사업금액: {_won(s.get('금액'))} · 마감일: {s.get('마감일') or '미상'}"
         )
+        if 파일명:
+            q = quote(파일명)
+            view_url = f"{BACKEND_URL}/file?name={q}"
+            dl_url = f"{BACKEND_URL}/file?name={q}&download=1"
+            # 새 탭에서 열리도록 HTML 링크로 렌더링한다.
+            st.markdown(
+                f"&nbsp;&nbsp;&nbsp;<a href='{view_url}' target='_blank'>파일 보기</a> · "
+                f"<a href='{dl_url}' target='_blank'>다운로드</a>",
+                unsafe_allow_html=True,
+            )
 
 
 def _render_answer(data):
@@ -149,26 +161,30 @@ with st.sidebar:
             st.error(f"문서 목록 조회 실패: {e}")
 
     st.divider()
-    if st.button("대화 초기화"):
-        st.session_state.history = []
-        st.session_state.messages = []
-        st.rerun()
     _render_settings_panel()
 
-# 히스토리 초기화
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
 # 본문: 모드 선택 + 질문 입력
 mode = st.radio("모드", ["QA (질문답변)", "요약"], horizontal=True)
 endpoint = "/chat" if mode.startswith("QA") else "/summarize"
 
-# 이전 대화 기록 표시
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+# 대화 기록(턴 단위)을 세션에 보관해 재실행 후에도 유지하고, 백엔드에 히스토리로 전달한다.
+# 각 턴: {"mode", "question", "data"(백엔드 응답: answer/sources)}
+if "turns" not in st.session_state:
+    st.session_state.turns = []
+
+# 지난 대화를 채팅 형태로 표시(사용자 질문 + 답변 + 근거 출처/파일 링크)
+if st.session_state.turns:
+    cols = st.columns([3, 1])
+    cols[0].caption(f"대화 {len(st.session_state.turns)}턴")
+    if cols[1].button("대화 초기화", use_container_width=True):
+        st.session_state.turns = []
+        st.rerun()
+    for turn in st.session_state.turns:
+        with st.chat_message("user"):
+            st.markdown(f"**[{turn['mode']}]** {turn['question']}")
+        with st.chat_message("assistant"):
+            _render_answer(turn["data"])
 
 placeholder = (
     "예: 이 사업의 평가 배점 기준은?"
@@ -181,30 +197,23 @@ if st.button("실행", type="primary"):
     if not question.strip():
         st.warning("질문을 입력하세요.")
     else:
-        with st.chat_message("user"):
-            st.markdown(question)
-        st.session_state.messages.append({"role": "user", "content": question})
-
+        # 백엔드에 보낼 히스토리: 지난 턴들의 (질문, 답변) 쌍
+        history = [
+            (t["question"], t["data"].get("answer", ""))
+            for t in st.session_state.turns
+        ]
         with st.spinner("백엔드에 요청 중..."):
             try:
                 resp = requests.post(
                     f"{BACKEND_URL}{endpoint}",
-                    json={
-                        "question": question,
-                        "history": st.session_state.history,
-                    },
+                    json={"question": question, "history": history},
                     timeout=120,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    with st.chat_message("assistant"):
-                        _render_answer(data)
-                    st.session_state.history.append(
-                        (question, data.get("answer", ""))
+                    st.session_state.turns.append(
+                        {"mode": mode, "question": question, "data": resp.json()}
                     )
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": data.get("answer", "")}
-                    )
+                    st.rerun()
                 else:
                     st.error(f"오류 {resp.status_code}: {resp.text}")
             except Exception as e:

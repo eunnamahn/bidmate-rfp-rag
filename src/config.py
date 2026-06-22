@@ -49,32 +49,41 @@ def make_embedding(cfg: Dict[str, Any]):
     if provider == "huggingface":
         from langchain_huggingface import HuggingFaceEmbeddings
 
-        return HuggingFaceEmbeddings(model_name=emb["model"])
+        # CUDA GPU가 있으면 GPU로 임베딩한다(없으면 CPU). RTX 등 로컬 GPU 활용.
+        model_kwargs = {}
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                model_kwargs["device"] = "cuda"
+        except Exception:
+            pass
+        return HuggingFaceEmbeddings(model_name=emb["model"], model_kwargs=model_kwargs)
     raise ValueError(f"지원하지 않는 embedding provider: {provider}")
 
 
 def make_llm(cfg: Dict[str, Any]):
     """config의 llm.provider에 따라 LLM 객체를 생성한다.
 
-    openai -> ChatOpenAI (예: gpt-4o-mini)
-    ollama -> ChatOllama (예: qwen3:8b)
+    openai -> ChatOpenAI (예: gpt-5-mini)
+    ollama -> ChatOllama (예: qwen3:8b). 원격 Ollama(GCP VM) 주소는 base_url로 지정한다.
+
+    base_url은 ollama 전용이다. 원격 Ollama 주소는 config의 llm.base_url을 우선 쓰고,
+    비어 있으면 .env의 OLLAMA_BASE_URL을 쓴다(둘 다 없으면 로컬 11434). openai에는
+    base_url을 넘기지 않는다(VM 주소가 남아 있어도 openai 호출이 깨지지 않게).
     """
     llm = cfg["llm"]
     provider = llm["provider"]
     temperature = llm.get("temperature", 0)
-    base_url = llm.get("base_url") or None
     if provider == "openai":
         _require_openai_key()
         from langchain_openai import ChatOpenAI
 
-        kwargs = {"model": llm["model"], "temperature": temperature}
-        if base_url:
-            kwargs["base_url"] = base_url
-        return ChatOpenAI(**kwargs)
+        return ChatOpenAI(model=llm["model"], temperature=temperature)
     if provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        # base_url로 원격 Ollama(예: GCP VM의 http://<ip>:11434)를 가리킬 수 있다.
+        base_url = llm.get("base_url") or os.getenv("OLLAMA_BASE_URL")
         kwargs = {"model": llm["model"], "temperature": temperature}
         if base_url:
             kwargs["base_url"] = base_url

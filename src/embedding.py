@@ -15,6 +15,11 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
 
+# 전처리(loader._clean)/청킹 로직이 바뀌면 이 값을 올려 기존 캐시를 무효화한다.
+# (캐시 키는 모델/파서/청크 설정만 반영하므로 코드 변경은 별도 버전으로 추적한다.)
+PREP_VERSION = "v2"
+
+
 def _safe_name(name: str) -> str:
     """디렉토리명으로 쓸 수 있게 정리한다."""
     return re.sub(r"[^0-9A-Za-z._-]+", "_", name)
@@ -37,6 +42,7 @@ def make_cache_key(cfg: Dict[str, Any]) -> str:
         c.get("strategy", "recursive"),
         str(c["size"]),
         str(c["overlap"]),
+        PREP_VERSION,
     ]
     return _safe_name("__".join(parts))
 

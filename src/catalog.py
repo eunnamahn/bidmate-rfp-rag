@@ -27,16 +27,22 @@ LLM_PRESETS: Dict[str, Dict[str, Any]] = {
         "model": "gpt-5-nano",
         "reindex": False,
     },
-    "openai-gpt-4o-mini": {
-        "label": "GPT-4o mini (OpenAI)",
+    "openai-gpt-5-mini": {
+        "label": "GPT-5 mini (OpenAI)",
         "provider": "openai",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5-mini",
         "reindex": False,
     },
-    "ollama-qwen3-8b": {
-        "label": "Qwen3 8B (Ollama, 로컬)",
+    "ollama-exaone3.5-7.8b": {
+        "label": "EXAONE 3.5 7.8B (Ollama VM)",
         "provider": "ollama",
-        "model": "qwen3:8b",
+        "model": "exaone3.5:7.8b",
+        "reindex": False,
+    },
+    "ollama-qwen2.5-14b": {
+        "label": "Qwen2.5 14B (Ollama VM)",
+        "provider": "ollama",
+        "model": "qwen2.5:14b",
         "reindex": False,
     },
 }
@@ -46,12 +52,6 @@ EMBEDDING_PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "OpenAI text-embedding-3-small",
         "provider": "openai",
         "model": "text-embedding-3-small",
-        "reindex": True,
-    },
-    "openai-3-large": {
-        "label": "OpenAI text-embedding-3-large",
-        "provider": "openai",
-        "model": "text-embedding-3-large",
         "reindex": True,
     },
     "hf-kure-v1": {
