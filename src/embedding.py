@@ -17,7 +17,7 @@ from langchain_core.documents import Document
 
 # 전처리(loader._clean)/청킹 로직이 바뀌면 이 값을 올려 기존 캐시를 무효화한다.
 # (캐시 키는 모델/파서/청크 설정만 반영하므로 코드 변경은 별도 버전으로 추적한다.)
-PREP_VERSION = "v2"
+PREP_VERSION = "v3"
 
 
 def _safe_name(name: str) -> str:

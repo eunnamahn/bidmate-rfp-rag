@@ -234,6 +234,28 @@ def _is_pdf(filename: str, fmt: str) -> bool:
     return filename.lower().endswith(".pdf") or "pdf" in fmt
 
 
+def _extract_hwp(path: Path, primary, fallback) -> tuple:
+    """HWP 본문을 추출하되, 1차 파서가 실패/빈 결과면 대체 파서로 재시도한다.
+
+    pyhwp(hwp5txt)가 일부 HWP에서 0자를 반환하는 경우가 있어, 그런 파일만
+    hwp-hwpx-parser 등 대체 파서로 재시도해 본문을 복구한다.
+    반환: (text, used_fallback)
+    """
+    try:
+        text = _parse_with_timeout(primary, path, PARSE_TIMEOUT)
+    except (FuturesTimeout, Exception):
+        text = ""
+    if text and text.strip():
+        return text, False
+    if fallback is None:
+        return text, False
+    # 1차가 빈 결과/실패 -> 대체 파서로 재시도
+    try:
+        return _parse_with_timeout(fallback, path, PARSE_TIMEOUT), True
+    except (FuturesTimeout, Exception):
+        return "", True
+
+
 def load_documents(cfg: Dict[str, Any]) -> List[Document]:
     """data_list.csv를 읽고 각 행의 원본 파일을 파싱해 Document 리스트로 반환한다.
 
@@ -247,8 +269,14 @@ def load_documents(cfg: Dict[str, Any]) -> List[Document]:
 
     # config로 파서 선택(교체 축). 기본값은 베이스라인 파서.
     parser_cfg = cfg.get("parser", {})
-    hwp_parser = make_hwp_parser(parser_cfg.get("hwp", "hwp-hwpx-parser"))
+    hwp_name = parser_cfg.get("hwp", "hwp-hwpx-parser")
+    hwp_parser = make_hwp_parser(hwp_name)
     pdf_parser = make_pdf_parser(parser_cfg.get("pdf", "pdfplumber"))
+    # 1차 HWP 파서가 실패/빈 결과일 때 쓸 대체 파서(다른 HWP 파서).
+    # 예: 기본 pyhwp가 0자를 반환하는 일부 HWP를 hwp-hwpx-parser로 복구.
+    hwp_fallback = make_hwp_parser(
+        "hwp-hwpx-parser" if hwp_name != "hwp-hwpx-parser" else "pyhwp"
+    )
 
     docs: List[Document] = []
     for _, row in df.iterrows():
@@ -259,19 +287,18 @@ def load_documents(cfg: Dict[str, Any]) -> List[Document]:
         text = ""
         fallback_used = False
         if path.exists():
-            try:
-                if _is_hwp(filename, fmt):
-                    text = _parse_with_timeout(hwp_parser, path, PARSE_TIMEOUT)
-                elif _is_pdf(filename, fmt):
+            if _is_hwp(filename, fmt):
+                # HWP는 1차 실패/빈 결과 시 대체 파서로 재시도(본문 복구).
+                text, fallback_used = _extract_hwp(path, hwp_parser, hwp_fallback)
+            else:
+                # PDF 또는 형식 불명: PDF 파서로 시도.
+                try:
                     text = _parse_with_timeout(pdf_parser, path, PARSE_TIMEOUT)
-                else:
-                    # 확장자/형식 불명 시 PDF 파서로 시도
-                    text = _parse_with_timeout(pdf_parser, path, PARSE_TIMEOUT)
-            except (FuturesTimeout, Exception):
-                # 실패해도 중단하지 않는다. 본문은 비우고 플래그만 남긴다.
-                # ('텍스트' 컬럼으로 대체하지 않는다 — 발췌본이라 본문 소스 부적합)
-                text = ""
-                fallback_used = True
+                except (FuturesTimeout, Exception):
+                    # 실패해도 중단하지 않는다. 본문은 비우고 플래그만 남긴다.
+                    # ('텍스트' 컬럼으로 대체하지 않는다 — 발췌본이라 본문 소스 부적합)
+                    text = ""
+                    fallback_used = True
         else:
             fallback_used = True
 
