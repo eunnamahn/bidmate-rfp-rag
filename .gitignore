@@ -19,5 +19,6 @@ venv/
 # 실행 산출물/임시 로그
 *.out
 *.err
+*.log
 pr*.diff
 vm_model_test.json
