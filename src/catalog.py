@@ -64,6 +64,9 @@ EMBEDDING_PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "BGE-M3 (HuggingFace, 로컬)",
         "provider": "huggingface",
         "model": "BAAI/bge-m3",
+        # main 리비전은 .bin뿐이라 torch<2.6에서 로딩이 막힌다. safetensors가 있는
+        # 리비전으로 고정한다(가중치 동일 -> 캐시 키/인덱스 호환).
+        "revision": "9a0624b896d81da7492a910ffa53731274b6cf3d",
         "reindex": True,
     },
 }
@@ -90,6 +93,36 @@ CHUNK_PRESETS: Dict[str, Dict[str, Any]] = {
         "overlap": 30,
         "reindex": True,
     },
+    "section-500-50": {
+        "label": "Section 키워드 청킹 500/50 (EDA 섹션 단위)",
+        "strategy": "section",
+        "size": 500,
+        "overlap": 50,
+        "reindex": True,
+    },
+    "section-1000-100": {
+        "label": "Section 키워드 청킹 1000/100 (긴 상한)",
+        "strategy": "section",
+        "size": 1000,
+        "overlap": 100,
+        "reindex": True,
+    },
+}
+
+# HWP/PDF 파서는 cfg["parser"]의 hwp/pdf 키 하나씩만 덮어쓴다(서로 독립).
+# key를 파서 이름과 동일하게 두어 cfg 값과 일치시킨다(src/loader.py 레지스트리와 동일).
+PARSER_HWP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "pyhwp": {"label": "pyhwp (텍스트, 빠름)", "hwp": "pyhwp", "reindex": True},
+    "hwp-hwpx-parser": {
+        "label": "hwp-hwpx-parser (표 마크다운 보존)",
+        "hwp": "hwp-hwpx-parser", "reindex": True,
+    },
+    "olefile": {"label": "olefile (OLE 직접파싱, 텍스트)", "hwp": "olefile", "reindex": True},
+}
+
+PARSER_PDF_PRESETS: Dict[str, Dict[str, Any]] = {
+    "pymupdf": {"label": "PyMuPDF (빠름/안정)", "pdf": "pymupdf", "reindex": True},
+    "pdfplumber": {"label": "pdfplumber (표 정밀)", "pdf": "pdfplumber", "reindex": True},
 }
 
 # 프리셋 종류 -> (cfg 섹션 이름, 카탈로그, 현재 프리셋 판별에 쓸 설정 키들)
@@ -97,6 +130,8 @@ _SECTIONS: Dict[str, tuple] = {
     "llm": ("llm", LLM_PRESETS, ("provider", "model")),
     "embedding": ("embedding", EMBEDDING_PRESETS, ("provider", "model")),
     "chunk": ("chunk", CHUNK_PRESETS, ("strategy", "size", "overlap")),
+    "parser_hwp": ("parser", PARSER_HWP_PRESETS, ("hwp",)),
+    "parser_pdf": ("parser", PARSER_PDF_PRESETS, ("pdf",)),
 }
 
 # cfg에 덮어쓸 때 제외할 메타 키

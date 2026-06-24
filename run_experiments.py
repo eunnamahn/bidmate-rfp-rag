@@ -30,7 +30,12 @@ from src.pipeline import build_pipeline
 EXPERIMENTS: List[Dict[str, Any]] = [
     {"name": "baseline", "desc": "현재 config 그대로"},
     {"name": "chunk_1000", "desc": "청크 1000/100", "chunk": "recursive-1000-100"},
+    {"name": "chunk_section", "desc": "키워드 섹션 청킹", "chunk": "section-500-50"},
     {"name": "hwp_table", "desc": "HWP 표 보존 파서", "parser": {"hwp": "hwp-hwpx-parser"}},
+    {"name": "ole_pdfplumber", "desc": "olefile+pdfplumber",
+     "parser": {"hwp": "olefile", "pdf": "pdfplumber"}},
+    {"name": "ole_pymupdf", "desc": "olefile+pymupdf",
+     "parser": {"hwp": "olefile", "pdf": "pymupdf"}},
     {"name": "emb_kure", "desc": "임베딩 KURE-v1", "embedding": "hf-kure-v1"},
     {"name": "emb_bge_m3", "desc": "임베딩 bge-m3", "embedding": "hf-bge-m3"},
     {"name": "llm_mini", "desc": "LLM gpt-5-mini", "llm": "openai-gpt-5-mini"},

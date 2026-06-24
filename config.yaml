@@ -7,7 +7,7 @@ data:
   faiss_cache: data/faiss_rfp
 
 parser:
-  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존)
+  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존) | olefile(OLE 직접파싱, 텍스트만)
   pdf: pymupdf                # pymupdf(빠름/안정) | pdfplumber(표 정밀)
 
 embedding:

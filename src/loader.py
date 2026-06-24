@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import numbers
 import re
+import struct
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
@@ -25,8 +28,9 @@ MIN_CHARS = 1000
 
 # 제어문자 제거용 (탭/개행은 보존)
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-# 깨진 특수문자: 유니코드 치환문자(U+FFFD)와 사용자정의영역(U+E000~U+F8FF)
-_BROKEN = re.compile("[\ufffd\ue000-\uf8ff]")
+# 깨진 특수문자: 외톨이 서로게이트(U+D800~U+DFFF), 유니코드 치환문자(U+FFFD),
+# 사용자정의영역(U+E000~U+F8FF). 서로게이트는 HF 임베딩 토크나이저를 깨뜨리므로 제거.
+_BROKEN = re.compile("[\ud800-\udfff\ufffd\ue000-\uf8ff]")
 # HWP 파싱 아티팩트: <표>, <그림>, <표 ...>, </그림> 등 태그(EDA: 문서당 평균 2,436자)
 _HWP_TAG = re.compile(r"</?(?:표|그림)[^>]*>")
 # 목차로 보이는 줄: '항목 ........ 12' 형태(점/공백 다수 + 끝 페이지번호)
@@ -63,6 +67,87 @@ def _parse_hwp_pyhwp(path: Path) -> str:
         ["hwp5txt", str(path)], capture_output=True, timeout=PARSE_TIMEOUT
     )
     return out.stdout.decode("utf-8", "replace").strip()
+
+
+def _parse_hwp_olefile(path: Path) -> str:
+    """HWP 5.0 파서: olefile로 OLE 스트림을 직접 읽어 본문을 추출한다.
+
+    BodyText/SectionN 스트림을 (FileHeader 플래그가 압축이면 zlib raw deflate로)
+    해제한 뒤, HWPTAG_PARA_TEXT 레코드의 UTF-16LE 텍스트만 모은다. 인라인
+    제어문자는 폭(1 또는 8 wchar)에 맞춰 건너뛴다. HWPX(zip)는 대상이 아니다.
+    의존성 없이 가벼우나 표 구조는 보존하지 못한다(텍스트만).
+    설치: pip install olefile
+    """
+    import olefile
+
+    ole = olefile.OleFileIO(str(path))
+    try:
+        if not ole.exists("FileHeader"):
+            raise ValueError("HWP 5.0 형식이 아님(FileHeader 스트림 없음)")
+        is_compressed = bool(ole.openstream("FileHeader").read()[36] & 0x01)
+
+        # BodyText/SectionN 스트림을 번호순으로 모은다.
+        nums = [
+            int(e[1][len("Section"):])
+            for e in ole.listdir()
+            if len(e) == 2 and e[0] == "BodyText" and e[1].startswith("Section")
+        ]
+        parts: List[str] = []
+        for n in sorted(nums):
+            raw = ole.openstream(f"BodyText/Section{n}").read()
+            data = zlib.decompress(raw, -15) if is_compressed else raw
+            parts.append(_hwp_section_text(data))
+        return "\n".join(parts).strip()
+    finally:
+        ole.close()
+
+
+# HWPTAG_PARA_TEXT = HWPTAG_BEGIN(0x010) + 50 = 67
+_HWPTAG_PARA_TEXT = 67
+# 인라인 제어문자 중 추가 파라미터까지 총 8 wchar(16바이트)를 차지하는 코드들
+_HWP_EXT_CTRL = frozenset({1, 2, 3, 4, 11, 12, 14, 15, 16, 17, 18, 21, 22, 23})
+
+
+def _hwp_section_text(data: bytes) -> str:
+    """해제된 BodyText 섹션을 레코드 단위로 훑어 문단 텍스트만 추출한다."""
+    out: List[str] = []
+    i, size = 0, len(data)
+    while i + 4 <= size:
+        rec = struct.unpack_from("<I", data, i)[0]
+        tag = rec & 0x3ff
+        length = (rec >> 20) & 0xfff
+        i += 4
+        if length == 0xfff:  # 확장 크기: 다음 4바이트가 실제 길이
+            length = struct.unpack_from("<I", data, i)[0]
+            i += 4
+        if tag == _HWPTAG_PARA_TEXT:
+            out.append(_hwp_para_text(data[i:i + length]))
+        i += length
+    return "\n".join(out)
+
+
+def _hwp_para_text(buf: bytes) -> str:
+    """PARA_TEXT 레코드(UTF-16LE + 인라인 제어문자)에서 글자만 뽑는다.
+
+    텍스트 코드유닛은 원본 2바이트를 모아 마지막에 UTF-16LE로 한 번에 디코드한다.
+    이렇게 해야 BMP 밖 문자의 서로게이트 쌍이 올바른 코드포인트로 합쳐진다.
+    (코드유닛마다 chr()를 호출하면 외톨이 서로게이트가 남아, HF 임베딩 토크나이저가
+     'TextEncodeInput' 오류로 깨진다.)
+    """
+    out = bytearray()
+    j, n = 0, len(buf)
+    while j + 2 <= n:
+        code = struct.unpack_from("<H", buf, j)[0]
+        if code in _HWP_EXT_CTRL:
+            j += 16  # 제어문자 + 파라미터(총 8 wchar) 건너뛰기
+        elif code < 32:
+            if code in (10, 13):  # 줄/문단 바꿈만 개행으로 보존
+                out += b"\n\x00"
+            j += 2
+        else:
+            out += buf[j:j + 2]  # 원본 2바이트 유지(서로게이트 쌍 보존)
+            j += 2
+    return out.decode("utf-16-le", errors="ignore")
 
 
 def _parse_pdf_pdfplumber(path: Path) -> str:
@@ -110,6 +195,7 @@ def _parse_pdf_pymupdf(path: Path) -> str:
 HWP_PARSERS = {
     "hwp-hwpx-parser": _parse_hwp_hwpx_parser,
     "pyhwp": _parse_hwp_pyhwp,
+    "olefile": _parse_hwp_olefile,
 }
 PDF_PARSERS = {
     "pdfplumber": _parse_pdf_pdfplumber,
@@ -192,10 +278,15 @@ def _parse_amount(value: Any) -> Optional[int]:
     """사업금액을 정수로 변환한다. 0원/결측은 미기재로 보고 None 처리한다."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
-    digits = re.sub(r"[^\d]", "", str(value))
-    if not digits:
-        return None
-    amount = int(digits)
+    # 숫자형(예: pandas가 130000000.0 float로 읽음)은 바로 정수화한다.
+    # str() 후 숫자만 뽑으면 '.0'의 0이 붙어 10배로 부풀려지는 버그가 있었다.
+    if isinstance(value, numbers.Number):
+        amount = int(value)
+    else:
+        digits = re.sub(r"[^\d]", "", str(value))
+        if not digits:
+            return None
+        amount = int(digits)
     return None if amount == 0 else amount
 
 

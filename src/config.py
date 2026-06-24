@@ -58,6 +58,11 @@ def make_embedding(cfg: Dict[str, Any]):
                 model_kwargs["device"] = "cuda"
         except Exception:
             pass
+        # 특정 리비전 고정(예: bge-m3는 .bin만 있는 main 대신 safetensors 리비전 사용
+        # — torch<2.6 + transformers의 CVE 체크로 .bin 로딩이 막히는 문제 회피).
+        # revision은 모델 가중치를 바꾸지 않으므로 캐시 키에는 넣지 않는다.
+        if emb.get("revision"):
+            model_kwargs["revision"] = emb["revision"]
         return HuggingFaceEmbeddings(model_name=emb["model"], model_kwargs=model_kwargs)
     raise ValueError(f"지원하지 않는 embedding provider: {provider}")
 
