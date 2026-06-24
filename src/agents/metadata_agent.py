@@ -74,9 +74,7 @@ def extract_metadata(text: str, cfg: Dict[str, Any]) -> Dict[str, Optional[Any]]
     try:
         response = llm.invoke(messages)
         raw = response.content if hasattr(response, "content") else str(response)
-        print("LLM 응답:", raw)  # 추가
-    except Exception as e:
-        print("LLM 에러:", e)  # 추가
+    except Exception:
         return dict(_EMPTY)
 
     # ```json ... ``` 블록 또는 순수 {} 블록 추출

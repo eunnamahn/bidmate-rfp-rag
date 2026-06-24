@@ -240,6 +240,28 @@ def _is_pdf(filename: str, fmt: str) -> bool:
     return filename.lower().endswith(".pdf") or "pdf" in fmt
 
 
+def parse_file(path: Path, cfg: Dict[str, Any]) -> str:
+    """단일 파일을 설정된 파서로 파싱해 정제 텍스트를 반환한다.
+
+    nara_agent 등 외부에서 개별 파일을 파싱할 때 사용하는 공개 API.
+    파싱 실패나 미지원 형식이면 빈 문자열을 반환한다.
+    """
+    parser_cfg = cfg.get("parser", {})
+    filename = path.name
+    fmt = path.suffix.lower().lstrip(".")
+    try:
+        if _is_hwp(filename, fmt):
+            parser = make_hwp_parser(parser_cfg.get("hwp", "pyhwp"))
+        elif _is_pdf(filename, fmt):
+            parser = make_pdf_parser(parser_cfg.get("pdf", "pymupdf"))
+        else:
+            return ""
+        text = _parse_with_timeout(parser, path, PARSE_TIMEOUT)
+    except Exception:
+        return ""
+    return _clean(text) if text else ""
+
+
 def load_documents(cfg: Dict[str, Any]) -> List[Document]:
     """data_list.csv를 읽고 각 행의 원본 파일을 파싱해 Document 리스트로 반환한다.
 
