@@ -28,7 +28,14 @@ st.caption("공공·기업 RFP를 추출·요약해 입찰 기회를 빠르게 �
 # ──────────────────────────────────────────────
 
 def _won(amount):
-    return f"{amount:,}원" if isinstance(amount, int) else "미기재"
+    # DataFrame을 거치면 금액이 numpy float64/int64로 바뀌어 isinstance(int) 판별이
+    # 실패한다(특히 None이 섞이면 컬럼 전체가 float화). 숫자형이면 모두 받아준다.
+    if amount is None or pd.isna(amount):
+        return "미기재"
+    try:
+        return f"{int(amount):,}원"
+    except (TypeError, ValueError):
+        return "미기재"
 
 
 def _file_links(파일명: str) -> str:
@@ -125,6 +132,8 @@ def _render_settings_panel():
     llm_key = _preset_selectbox("LLM 모델", catalog.get("llm", {}))
     emb_key = _preset_selectbox("임베딩", catalog.get("embedding", {}), help_reindex=True)
     chunk_key = _preset_selectbox("청킹", catalog.get("chunk", {}), help_reindex=True)
+    hwp_key = _preset_selectbox("HWP 파서", catalog.get("parser_hwp", {}), help_reindex=True)
+    pdf_key = _preset_selectbox("PDF 파서", catalog.get("parser_pdf", {}), help_reindex=True)
 
     with st.expander("세부 조정"):
         retr = settings.get("retriever", {})
@@ -138,6 +147,8 @@ def _render_settings_panel():
     reindex_will = (
         emb_key != catalog.get("embedding", {}).get("current")
         or chunk_key != catalog.get("chunk", {}).get("current")
+        or hwp_key != catalog.get("parser_hwp", {}).get("current")
+        or pdf_key != catalog.get("parser_pdf", {}).get("current")
     )
     if reindex_will:
         st.caption("임베딩/청킹이 바뀌었습니다. 적용 시 캐시가 없으면 재인덱싱(시간 소요).")
@@ -145,6 +156,7 @@ def _render_settings_panel():
     if st.button("설정 적용", use_container_width=True):
         payload = {
             "llm_preset": llm_key, "embedding_preset": emb_key, "chunk_preset": chunk_key,
+            "parser_hwp_preset": hwp_key, "parser_pdf_preset": pdf_key,
             "retriever_k": k, "retriever_use_bm25": use_bm25, "llm_temperature": temperature,
         }
         with st.spinner("설정 적용 중... (재인덱싱이 필요하면 시간이 걸립니다)"):

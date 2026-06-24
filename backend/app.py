@@ -60,6 +60,8 @@ class ConfigUpdate(BaseModel):
     llm_preset: Optional[str] = None
     embedding_preset: Optional[str] = None
     chunk_preset: Optional[str] = None
+    parser_hwp_preset: Optional[str] = None
+    parser_pdf_preset: Optional[str] = None
     # 프리셋에 포함되지 않는 자유 조정 항목
     llm_temperature: Optional[float] = None
     llm_base_url: Optional[str] = None
@@ -127,6 +129,10 @@ def _apply_updates(cfg: Dict[str, Any], u: ConfigUpdate) -> Dict[str, Any]:
         cfg = catalog.apply_preset(cfg, "embedding", u.embedding_preset)
     if u.chunk_preset is not None:
         cfg = catalog.apply_preset(cfg, "chunk", u.chunk_preset)
+    if u.parser_hwp_preset is not None:
+        cfg = catalog.apply_preset(cfg, "parser_hwp", u.parser_hwp_preset)
+    if u.parser_pdf_preset is not None:
+        cfg = catalog.apply_preset(cfg, "parser_pdf", u.parser_pdf_preset)
     if u.llm_temperature is not None:
         cfg["llm"]["temperature"] = u.llm_temperature
     if u.llm_base_url is not None:
