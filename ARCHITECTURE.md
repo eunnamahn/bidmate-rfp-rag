@@ -26,13 +26,13 @@ flowchart TD
         split2 --> add["embedding.add_to_vectorstore<br/>(증분 추가)"]
     end
 
-    subgraph GRAPH["🧭 LangGraph 수퍼바이저 (src/graph.py)"]
+    subgraph GRAPH["🧭 도구 호출 수퍼바이저 에이전트 (src/graph.py)"]
         direction TB
-        cls{"classify_intent<br/>키워드 → LLM 폴백"}
-        cls -->|qa| qa["qa 노드<br/>generate_answer(qa)"]
-        cls -->|summary| sm["summary 노드<br/>generate_answer(summary)"]
-        cls -->|metadata| md["metadata 노드<br/>검색 → extract_metadata"]
-        cls -->|collect| col["collect 노드<br/>나라장터 목록 검색<br/>(메타데이터만)"]
+        cls{"에이전트(LLM)<br/>tool-calling 라우팅<br/>(미지원 시 키워드 폴백)"}
+        cls -->|answer_from_documents| qa["qa 노드<br/>generate_answer(qa)"]
+        cls -->|summarize_rfp| sm["summary 노드<br/>generate_answer(summary)"]
+        cls -->|extract_document_metadata| md["metadata 노드<br/>검색 → extract_metadata"]
+        cls -->|search_nara_notices| col["collect 노드<br/>나라장터 목록 검색<br/>(메타데이터만)"]
     end
 
     subgraph RT["💬 검색·생성 런타임"]
@@ -82,7 +82,7 @@ sequenceDiagram
     U->>API: 질문 입력
     API->>G: graph.invoke(question, history, filename)
     Note over G: /summarize는 intent="summary" 강제 주입
-    G->>G: classify_intent (키워드 → 모호 시 LLM)
+    G->>G: 에이전트 LLM이 도구 호출로 라우팅<br/>(answer_from_documents / summarize_rfp /<br/>extract_document_metadata / search_nara_notices)
 
     alt intent = qa / summary
         G->>R: 질문별 검색기 선택(_select_retriever)
@@ -114,19 +114,27 @@ sequenceDiagram
 | 임베딩 | `src/embedding.py` | FAISS 캐시(`build_vectorstore`) + 증분 추가(`add_to_vectorstore`) |
 | 검색 | `src/retriever.py` | top-k + 메타데이터 필터 + 기관 자동 라우팅 |
 | 생성 | `src/generator.py` | 답변 + 인용(citation) 정제 + 후속질문 재작성 |
-| **오케스트레이션** | `src/graph.py` | **LangGraph 수퍼바이저: 의도 분류 → qa/summary/metadata/collect 라우팅** |
-| **에이전트** | `src/agents/metadata_agent.py`, `src/agents/nara_agent.py` | 메타데이터 LLM 추출 · 나라장터 공고 수집(독립 배치/CLI) |
+| **에이전트** | `src/graph.py` | **도구 호출 수퍼바이저: LLM이 도구를 선택·호출해 라우팅** |
+| **도구(tool)** | `metadata_agent`, `nara_agent`, `retriever`, `generator` | 에이전트가 호출하는 능력 — 메타데이터 추출 · 나라장터 검색 · 검색 · 답변생성 |
 | 인터페이스 | `backend/app.py`, `src/streamlit/app.py` | FastAPI API · Streamlit UI |
 | 평가 | `src/evaluation/ragas_eval.py`, `run_ragas_experiments.py` | 골든셋 18조합 RAGAS + 커스텀 지표 |
 
-## 의도 라우팅 (수퍼바이저)
+## 도구 호출 라우팅 (에이전트 + 도구)
 
-| 의도 | 트리거(키워드 우선·모호 시 LLM) | 동작 |
+수퍼바이저 **에이전트**(LLM)가 요청을 보고 **도구**를 하나 골라 호출한다. 도구 인자(검색어 등)도
+LLM이 채운다. 도구 호출을 지원하지 않는 LLM(일부 Ollama)은 키워드 휴리스틱으로 폴백한다.
+`/summarize`는 분류 없이 summary 도구를 강제한다.
+
+| 도구(LLM에 노출) | 노드 | 동작(도구 본체) |
 |---|---|---|
-| `qa` | 기본값 | 검색 → `generate_answer(qa)` |
-| `summary` | "요약/정리/개요" · `/summarize`는 강제 | 검색 → `generate_answer(summary)` 고정 양식 |
-| `metadata` | "메타데이터/기본 정보 추출" | 검색 → `metadata_agent.extract_metadata` |
-| `collect` | "나라장터/신규·최신 공고/공고 수집·검색" | 목록 API로 메타데이터만 검색해 표시(인덱스 불변) |
+| `answer_from_documents(question)` | qa | 검색 → `generate_answer(qa)` |
+| `summarize_rfp(query)` | summary | 검색 → `generate_answer(summary)` 고정 양식 |
+| `extract_document_metadata(query)` | metadata | 검색 → `metadata_agent.extract_metadata` |
+| `search_nara_notices(keyword, days)` | collect | 목록 API로 메타데이터만 검색(인덱스 불변) |
+
+> **에이전트 vs 도구**: `nara_agent`·`metadata_agent`는 결정적 파이프라인/단발 추출이라
+> 그 자체로는 자율 에이전트가 아니라 **도구**다. 자율적 의사결정(어떤 도구를 쓸지)은
+> 수퍼바이저 에이전트가 담당한다. 라우팅은 도구 호출 1회(전체 ReAct 루프 아님).
 
 ## 나라장터 (타겟 검색 + 지연 인덱싱)
 
