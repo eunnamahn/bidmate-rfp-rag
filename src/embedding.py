@@ -15,6 +15,11 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 
 
+# 전처리(loader._clean)/청킹 로직이 바뀌면 이 값을 올려 기존 캐시를 무효화한다.
+# (캐시 키는 모델/파서/청크 설정만 반영하므로 코드 변경은 별도 버전으로 추적한다.)
+PREP_VERSION = "v3"
+
+
 def _safe_name(name: str) -> str:
     """디렉토리명으로 쓸 수 있게 정리한다."""
     return re.sub(r"[^0-9A-Za-z._-]+", "_", name)
@@ -37,6 +42,7 @@ def make_cache_key(cfg: Dict[str, Any]) -> str:
         c.get("strategy", "recursive"),
         str(c["size"]),
         str(c["overlap"]),
+        PREP_VERSION,
     ]
     return _safe_name("__".join(parts))
 
@@ -67,6 +73,33 @@ def build_vectorstore(chunks: List[Document], embedding, cache_dir: str,
         )
 
     vs = FAISS.from_documents(chunks, embedding)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    vs.save_local(str(cache_path))
+    return vs
+
+
+def add_to_vectorstore(chunks: List[Document], embedding, cache_dir: str,
+                       cache_key: str) -> FAISS:
+    """기존 FAISS에 새 청크를 점진적으로 추가하고 저장한다. 없으면 새로 생성한다.
+
+    build_vectorstore()가 전체 빌드/로드라면 이 함수는 증분 추가용이다.
+    nara_agent 등 신규 문서를 실시간으로 인덱싱할 때 사용한다.
+    """
+    if not chunks:
+        # 추가할 게 없으면 기존 캐시를 그대로 로드해 반환한다.
+        return build_vectorstore(chunks, embedding, cache_dir, cache_key)
+
+    cache_path = Path(cache_dir) / _safe_name(cache_key)
+    index_file = cache_path / "index.faiss"
+
+    if index_file.exists():
+        vs = FAISS.load_local(
+            str(cache_path), embedding, allow_dangerous_deserialization=True
+        )
+        vs.add_documents(chunks)
+    else:
+        vs = FAISS.from_documents(chunks, embedding)
+
     cache_path.mkdir(parents=True, exist_ok=True)
     vs.save_local(str(cache_path))
     return vs

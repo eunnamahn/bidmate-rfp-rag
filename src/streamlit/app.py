@@ -1,7 +1,8 @@
 """입찰메이트 RFP RAG - Streamlit UI.
 
-중요: 이 UI는 RAG 파이프라인을 직접 import하지 않는다.
-오직 백엔드 FastAPI(/chat, /summarize, /documents, /health)만 호출한다.
+컨설턴트가 수백 건의 RFP를 빠르게 훑고(목록), 핵심을 요약하고(요약),
+세부를 질문(QA)하는 흐름에 맞춰 탭으로 구성한다.
+이 UI는 RAG 파이프라인을 직접 import하지 않고 백엔드 FastAPI만 호출한다.
 
 실행:
   streamlit run src/streamlit/app.py
@@ -9,7 +10,9 @@
 """
 
 import os
+from urllib.parse import quote
 
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -17,11 +20,31 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="입찰메이트 RFP RAG", layout="wide")
 st.title("입찰메이트 RFP RAG")
-st.caption("RFP 문서 기반 질의응답 / 요약 (백엔드 API 연동)")
+st.caption("공공·기업 RFP를 추출·요약해 입찰 기회를 빠르게 찾는 컨설팅 어시스턴트")
 
+
+# ──────────────────────────────────────────────
+# 공통 유틸 / 렌더러
+# ──────────────────────────────────────────────
 
 def _won(amount):
-    return f"{amount:,}원" if isinstance(amount, int) else "미기재"
+    # DataFrame을 거치면 금액이 numpy float64/int64로 바뀌어 isinstance(int) 판별이
+    # 실패한다(특히 None이 섞이면 컬럼 전체가 float화). 숫자형이면 모두 받아준다.
+    if amount is None or pd.isna(amount):
+        return "미기재"
+    try:
+        return f"{int(amount):,}원"
+    except (TypeError, ValueError):
+        return "미기재"
+
+
+def _file_links(파일명: str) -> str:
+    """원본 파일 보기/다운로드 HTML 링크를 만든다(새 탭)."""
+    q = quote(파일명)
+    return (
+        f"<a href='{BACKEND_URL}/file?name={q}' target='_blank'>파일 보기</a> · "
+        f"<a href='{BACKEND_URL}/file?name={q}&download=1' target='_blank'>다운로드</a>"
+    )
 
 
 def _render_sources(sources):
@@ -31,12 +54,15 @@ def _render_sources(sources):
         return
     st.markdown("**근거 출처**")
     for i, s in enumerate(sources, 1):
-        파일명 = s.get("파일명") or "(파일명 없음)"
+        파일명 = s.get("파일명")
+        표시명 = 파일명 or "(파일명 없음)"
         기관 = s.get("기관") or "미상"
         st.markdown(
-            f"{i}. **{파일명}**  \n"
+            f"{i}. **{표시명}**  \n"
             f"   - 기관: {기관} · 사업금액: {_won(s.get('금액'))} · 마감일: {s.get('마감일') or '미상'}"
         )
+        if 파일명:
+            st.markdown("&nbsp;&nbsp;&nbsp;" + _file_links(파일명), unsafe_allow_html=True)
 
 
 def _render_answer(data):
@@ -45,17 +71,81 @@ def _render_answer(data):
         st.warning("거절 응답: 문서에서 근거를 찾지 못했습니다.")
         st.markdown(f"> {data.get('answer', '')}")
     else:
-        st.success("답변")
         st.markdown(data.get("answer", ""))
     st.divider()
     _render_sources(data.get("sources", []))
 
 
-def _preset_selectbox(label, group, help_reindex=False):
-    """카탈로그의 한 그룹(llm/embedding/chunk)을 드롭다운으로 그린다.
+@st.cache_data(ttl=120, show_spinner=False)
+def _fetch_documents():
+    """인덱싱된 문서 목록을 가져온다(120초 캐시)."""
+    r = requests.get(f"{BACKEND_URL}/documents", timeout=20)
+    r.raise_for_status()
+    return r.json().get("documents", [])
 
-    선택된 프리셋의 key를 반환한다. 현재 적용된 프리셋이 기본 선택된다.
-    """
+
+def _post(endpoint: str, payload: dict, timeout: int = 180):
+    """백엔드 POST 호출 공통 래퍼. (성공 시 dict, 실패 시 None+에러표시)"""
+    try:
+        resp = requests.post(f"{BACKEND_URL}{endpoint}", json=payload, timeout=timeout)
+    except Exception as e:
+        st.error(f"요청 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
+def _nara_search(keyword: str, days: int = 3, timeout: int = 60):
+    """나라장터 메타데이터 검색(GET /nara/search). 성공 시 notices 리스트, 실패 시 None."""
+    try:
+        resp = requests.get(
+            f"{BACKEND_URL}/nara/search",
+            params={"q": keyword, "days": days}, timeout=timeout,
+        )
+    except Exception as e:
+        st.error(f"검색 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json().get("notices", [])
+
+
+def _nara_ingest(item: dict, timeout: int = 600):
+    """선택 공고 1건 지연 인덱싱(POST /nara/ingest)."""
+    try:
+        resp = requests.post(f"{BACKEND_URL}/nara/ingest", json={"item": item}, timeout=timeout)
+    except Exception as e:
+        st.error(f"인덱싱 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
+def _upload_file(uploaded, timeout: int = 600):
+    """업로드 파일을 백엔드 /upload로 보낸다(멀티파트). 성공 시 dict, 실패 시 None."""
+    files = {"file": (uploaded.name, uploaded.getvalue())}
+    try:
+        resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=timeout)
+    except Exception as e:
+        st.error(f"업로드 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
+# ──────────────────────────────────────────────
+# 설정 패널 (사이드바)
+# ──────────────────────────────────────────────
+
+def _preset_selectbox(label, group, help_reindex=False):
+    """카탈로그 한 그룹(llm/embedding/chunk)을 드롭다운으로 그린다."""
     presets = group.get("presets", [])
     if not presets:
         return None
@@ -63,11 +153,33 @@ def _preset_selectbox(label, group, help_reindex=False):
     label_map = {p["key"]: p["label"] for p in presets}
     current = group.get("current")
     index = keys.index(current) if current in keys else 0
-    help_txt = "변경하면 재인덱싱이 필요합니다(시간이 걸릴 수 있음)." if help_reindex else None
+    help_txt = "변경하면 재인덱싱이 필요할 수 있습니다." if help_reindex else None
     return st.selectbox(
         label, keys, index=index,
         format_func=lambda k: label_map.get(k, k), help=help_txt,
     )
+
+
+def _render_upload_panel():
+    """문서(HWP/PDF) 업로드 → 백엔드 /upload → FAISS 영구 추가."""
+    st.header("문서 업로드")
+    uploaded = st.file_uploader(
+        "HWP·HWPX·PDF 파일", type=["hwp", "hwpx", "pdf"],
+        accept_multiple_files=False,
+        help="업로드하면 파싱·인덱싱되어 바로 질문/요약에 사용됩니다.",
+    )
+    if uploaded is not None and st.button("업로드 & 인덱싱", use_container_width=True):
+        with st.spinner(f"‘{uploaded.name}’ 파싱·인덱싱 중..."):
+            data = _upload_file(uploaded)
+        if data is not None:
+            _fetch_documents.clear()  # 새 문서가 목록에 보이도록 캐시 무효화
+            st.success(
+                f"‘{data['파일명']}’ 추가됨 · 청크 {data['chunks']}개 · "
+                f"전체 벡터 {data['vectors']:,}개"
+            )
+            기관 = data.get("기관") or "미상"
+            st.caption(f"추출: {기관} · {_won(data.get('금액'))} · 마감 {data.get('마감일') or '미상'}")
+            st.rerun()
 
 
 def _render_settings_panel():
@@ -85,50 +197,233 @@ def _render_settings_panel():
     llm_key = _preset_selectbox("LLM 모델", catalog.get("llm", {}))
     emb_key = _preset_selectbox("임베딩", catalog.get("embedding", {}), help_reindex=True)
     chunk_key = _preset_selectbox("청킹", catalog.get("chunk", {}), help_reindex=True)
+    hwp_key = _preset_selectbox("HWP 파서", catalog.get("parser_hwp", {}), help_reindex=True)
+    pdf_key = _preset_selectbox("PDF 파서", catalog.get("parser_pdf", {}), help_reindex=True)
 
     with st.expander("세부 조정"):
         retr = settings.get("retriever", {})
         k = st.slider("검색 문서 수 (k)", 1, 10, int(retr.get("k", 4)))
         use_bm25 = st.checkbox("BM25 하이브리드 검색", bool(retr.get("use_bm25", False)))
         temperature = st.slider(
-            "temperature", 0.0, 1.0, float(settings.get("llm", {}).get("temperature", 0)), 0.1
+            "temperature", 0.0, 1.0,
+            float(settings.get("llm", {}).get("temperature", 0)), 0.1,
         )
 
-    # 임베딩/청킹을 현재와 다르게 골랐으면 재인덱싱 경고
     reindex_will = (
         emb_key != catalog.get("embedding", {}).get("current")
         or chunk_key != catalog.get("chunk", {}).get("current")
+        or hwp_key != catalog.get("parser_hwp", {}).get("current")
+        or pdf_key != catalog.get("parser_pdf", {}).get("current")
     )
     if reindex_will:
-        st.caption("임베딩/청킹이 바뀌었습니다. 적용 시 캐시가 없으면 재인덱싱(시간 소요)이 일어납니다.")
+        st.caption("임베딩/청킹이 바뀌었습니다. 적용 시 캐시가 없으면 재인덱싱(시간 소요).")
 
     if st.button("설정 적용", use_container_width=True):
         payload = {
-            "llm_preset": llm_key,
-            "embedding_preset": emb_key,
-            "chunk_preset": chunk_key,
-            "retriever_k": k,
-            "retriever_use_bm25": use_bm25,
-            "llm_temperature": temperature,
+            "llm_preset": llm_key, "embedding_preset": emb_key, "chunk_preset": chunk_key,
+            "parser_hwp_preset": hwp_key, "parser_pdf_preset": pdf_key,
+            "retriever_k": k, "retriever_use_bm25": use_bm25, "llm_temperature": temperature,
         }
         with st.spinner("설정 적용 중... (재인덱싱이 필요하면 시간이 걸립니다)"):
-            try:
-                resp = requests.post(f"{BACKEND_URL}/config", json=payload, timeout=1800)
-            except Exception as e:
-                st.error(f"설정 적용 실패: {e}")
-                return
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("reindexed"):
-                st.success("설정 적용 완료 (재인덱싱 수행됨).")
-            else:
-                st.success("설정 적용 완료 (기존 인덱스 재사용).")
+            data = _post("/config", payload, timeout=1800)
+        if data is not None:
+            _fetch_documents.clear()  # 인덱스 바뀌었을 수 있으니 목록 캐시 무효화
+            msg = "재인덱싱 수행됨" if data.get("reindexed") else "기존 인덱스 재사용"
+            st.success(f"설정 적용 완료 ({msg}).")
             st.rerun()
+
+
+# ──────────────────────────────────────────────
+# 탭 1: RFP 목록 대시보드
+# ──────────────────────────────────────────────
+
+def _tab_documents():
+    st.subheader("RFP 목록")
+    try:
+        docs = _fetch_documents()
+    except Exception as e:
+        st.error(f"문서 목록을 불러올 수 없습니다: {e}")
+        return
+    if not docs:
+        st.info("인덱싱된 문서가 없습니다.")
+        return
+
+    df = pd.DataFrame(docs)
+    # 필터 UI
+    c1, c2, c3 = st.columns([2, 2, 1])
+    orgs = sorted({d.get("기관") for d in docs if d.get("기관")})
+    sel_orgs = c1.multiselect("기관 필터", orgs, placeholder="전체")
+    keyword = c2.text_input("사업명 검색", placeholder="키워드")
+    sort_by = c3.selectbox("정렬", ["마감일", "금액(높은순)", "사업명"])
+
+    view = df.copy()
+    if sel_orgs:
+        view = view[view["기관"].isin(sel_orgs)]
+    if keyword.strip():
+        kw = keyword.strip()
+        view = view[view["사업명"].fillna("").str.contains(kw)
+                    | view["파일명"].fillna("").str.contains(kw)]
+
+    if sort_by == "마감일":
+        view = view.sort_values("마감일", na_position="last")
+    elif sort_by == "금액(높은순)":
+        view = view.sort_values("금액", ascending=False, na_position="last")
+    else:
+        view = view.sort_values("사업명", na_position="last")
+
+    st.caption(f"표시 {len(view)}건 / 전체 {len(df)}건")
+    show = view[["사업명", "기관", "금액", "마감일", "파일형식"]].copy()
+    show["금액"] = show["금액"].apply(_won)
+    st.dataframe(show, use_container_width=True, hide_index=True, height=380)
+
+    # 문서 선택 -> 파일 링크 + 요약 바로가기
+    st.divider()
+    names = view["파일명"].tolist()
+    if names:
+        sel = st.selectbox("문서 선택(상세/요약)", names,
+                           format_func=lambda fn: _label_of(docs, fn))
+        st.markdown(_file_links(sel), unsafe_allow_html=True)
+        if st.button("요약 대상으로 지정", type="primary"):
+            st.session_state.selected_doc = sel
+            st.success("‘요약’ 탭에서 이 문서가 선택됩니다. 요약 탭으로 이동하세요.")
+
+
+def _label_of(docs, fn):
+    for d in docs:
+        if d.get("파일명") == fn:
+            return f"{d.get('사업명') or fn}  ·  {d.get('기관') or '미상'}"
+    return fn
+
+
+# ──────────────────────────────────────────────
+# 탭 2: 원클릭 요약 카드
+# ──────────────────────────────────────────────
+
+_SUMMARY_Q = "이 RFP의 핵심을 대상 기관·예산·마감일·핵심 요구조건·제출 방식으로 정리해줘."
+
+
+def _tab_summary():
+    st.subheader("RFP 요약")
+    try:
+        docs = _fetch_documents()
+    except Exception as e:
+        st.error(f"문서 목록을 불러올 수 없습니다: {e}")
+        return
+    if not docs:
+        st.info("인덱싱된 문서가 없습니다.")
+        return
+
+    names = [d.get("파일명") for d in docs]
+    default = st.session_state.get("selected_doc")
+    idx = names.index(default) if default in names else 0
+    sel = st.selectbox("문서 선택", names, index=idx,
+                       format_func=lambda fn: _label_of(docs, fn))
+
+    if "summaries" not in st.session_state:
+        st.session_state.summaries = {}
+
+    col1, col2 = st.columns([1, 3])
+    if col1.button("요약 생성", type="primary"):
+        with st.spinner("요약 생성 중..."):
+            data = _post("/summarize", {"question": _SUMMARY_Q, "filename": sel})
+        if data is not None:
+            st.session_state.summaries[sel] = data
+    col2.markdown(_file_links(sel), unsafe_allow_html=True)
+
+    data = st.session_state.summaries.get(sel)
+    if data:
+        with st.container(border=True):
+            _render_answer(data)
+    else:
+        st.caption("‘요약 생성’을 누르면 이 문서만 근거로 4대 항목 요약을 만듭니다.")
+
+
+# ──────────────────────────────────────────────
+# 탭 3: QA (대화)
+# ──────────────────────────────────────────────
+
+def _tab_qa():
+    st.subheader("질의응답 (QA)")
+    if "turns" not in st.session_state:
+        st.session_state.turns = []
+
+    if st.session_state.turns:
+        cols = st.columns([3, 1])
+        cols[0].caption(f"대화 {len(st.session_state.turns)}턴")
+        if cols[1].button("대화 초기화", use_container_width=True):
+            st.session_state.turns = []
+            st.rerun()
+        for turn in st.session_state.turns:
+            with st.chat_message("user"):
+                st.markdown(turn["question"])
+            with st.chat_message("assistant"):
+                _render_answer(turn["data"])
+
+    question = st.chat_input("예: 한국대학스포츠협의회 사업의 평가 배점 기준은?")
+    if question:
+        history = [(t["question"], t["data"].get("answer", ""))
+                   for t in st.session_state.turns]
+        with st.spinner("답변 생성 중..."):
+            data = _post("/chat", {"question": question, "history": history})
+        if data is not None:
+            st.session_state.turns.append({"question": question, "data": data})
+            st.rerun()
+
+
+# ──────────────────────────────────────────────
+# 탭 4: 나라장터 (타겟 검색 + 지연 인덱싱)
+# ──────────────────────────────────────────────
+
+def _tab_nara():
+    st.subheader("나라장터 공고 검색")
+    st.caption(
+        "키워드로 공고를 메타데이터만 검색합니다(인덱스에 적재하지 않음). "
+        "필요한 공고만 ‘인덱싱’하면 그 한 건만 본문을 받아 임베딩해 질문할 수 있습니다."
+    )
+    c1, c2, c3 = st.columns([4, 1, 1])
+    keyword = c1.text_input("공고명 키워드", placeholder="예: 이리동중학교 테마식현장체험학습",
+                            label_visibility="collapsed")
+    days = c2.number_input("최근 N일", min_value=1, max_value=30, value=3)
+    search = c3.button("검색", use_container_width=True)
+
+    if search:
+        if not keyword.strip():
+            st.warning("검색 키워드를 입력하세요.")
         else:
-            st.error(f"오류 {resp.status_code}: {resp.text}")
+            with st.spinner("나라장터 조회 중..."):
+                st.session_state.nara_results = _nara_search(keyword.strip(), int(days))
+
+    notices = st.session_state.get("nara_results")
+    if notices is None:
+        return
+    if not notices:
+        st.info("일치하는 공고가 없습니다. 키워드나 기간을 바꿔보세요.")
+        return
+
+    st.caption(f"검색 결과 {len(notices)}건 — 인덱싱할 공고를 선택하세요.")
+    for i, n in enumerate(notices):
+        with st.container(border=True):
+            cols = st.columns([5, 1])
+            cols[0].markdown(
+                f"**{n.get('사업명') or '(제목 없음)'}**  \n"
+                f"기관: {n.get('기관') or '미상'} · 금액: {_won(n.get('금액'))} · "
+                f"마감: {n.get('마감일') or '미상'} · 공고번호: {n.get('공고번호') or '-'}"
+            )
+            if cols[1].button("인덱싱", key=f"nara_ing_{i}", use_container_width=True):
+                with st.spinner("공고 본문 다운로드·임베딩 중..."):
+                    data = _nara_ingest(n.get("item", {}))
+                if data is not None:
+                    _fetch_documents.clear()
+                    st.success(
+                        f"‘{data['파일명']}’ 인덱싱 완료 · 청크 {data['chunks']}개 · "
+                        f"전체 벡터 {data['vectors']:,}개 — 이제 QA에서 질문할 수 있습니다."
+                    )
 
 
-# 사이드바: 백엔드 상태 + 문서 목록
+# ──────────────────────────────────────────────
+# 레이아웃
+# ──────────────────────────────────────────────
+
 with st.sidebar:
     st.header("상태")
     try:
@@ -139,44 +434,17 @@ with st.sidebar:
             st.warning(f"백엔드 준비 중: {h}")
     except Exception as e:
         st.error(f"백엔드에 연결할 수 없습니다.\n{BACKEND_URL}\n{e}")
-
-    if st.button("문서 목록 불러오기"):
-        try:
-            d = requests.get(f"{BACKEND_URL}/documents", timeout=10).json()
-            st.caption(f"인덱싱 문서 {d.get('count', 0)}건")
-            st.dataframe(d.get("documents", []), use_container_width=True)
-        except Exception as e:
-            st.error(f"문서 목록 조회 실패: {e}")
-
+    st.divider()
+    _render_upload_panel()
     st.divider()
     _render_settings_panel()
 
-
-# 본문: 모드 선택 + 질문 입력
-mode = st.radio("모드", ["QA (질문답변)", "요약"], horizontal=True)
-endpoint = "/chat" if mode.startswith("QA") else "/summarize"
-
-placeholder = (
-    "예: 이 사업의 평가 배점 기준은?"
-    if endpoint == "/chat"
-    else "예: 고려대학교 차세대 포털 학사 정보시스템 사업을 요약해줘"
-)
-question = st.text_area("질문 / 요청", placeholder=placeholder, height=100)
-
-if st.button("실행", type="primary"):
-    if not question.strip():
-        st.warning("질문을 입력하세요.")
-    else:
-        with st.spinner("백엔드에 요청 중..."):
-            try:
-                resp = requests.post(
-                    f"{BACKEND_URL}{endpoint}",
-                    json={"question": question},
-                    timeout=120,
-                )
-                if resp.status_code == 200:
-                    _render_answer(resp.json())
-                else:
-                    st.error(f"오류 {resp.status_code}: {resp.text}")
-            except Exception as e:
-                st.error(f"요청 실패: {e}")
+tab_list, tab_summary, tab_qa, tab_nara = st.tabs(["RFP 목록", "요약", "QA", "나라장터"])
+with tab_list:
+    _tab_documents()
+with tab_summary:
+    _tab_summary()
+with tab_qa:
+    _tab_qa()
+with tab_nara:
+    _tab_nara()

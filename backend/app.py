@@ -17,19 +17,36 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from langchain_core.documents import Document
 from pydantic import BaseModel
 
 from src import catalog
+from src.agents import nara_agent
+from src.agents.metadata_agent import extract_metadata
 from src.chunking import split_documents
 from src.config import load_config, make_embedding, make_llm
-from src.embedding import build_vectorstore, cache_exists, make_cache_key
+from src.embedding import (
+    add_to_vectorstore,
+    build_vectorstore,
+    cache_exists,
+    make_cache_key,
+)
 from src.evaluation.evaluate import REFUSAL_MARK
-from src.generator import generate_answer
-from src.loader import load_documents
-from src.retriever import build_retriever
+from src.graph import build_graph
+from src.loader import load_documents, parse_file
+from src.retriever import (
+    build_meta_filtered_retriever,
+    build_org_filtered_retriever,
+    build_retriever,
+    known_orgs,
+    match_orgs,
+)
 
 app = FastAPI(title="입찰메이트 RFP RAG API")
 
@@ -39,6 +56,10 @@ _STATE: Dict[str, Any] = {}
 
 class ChatRequest(BaseModel):
     question: str
+    # 대화 히스토리: [(사용자질문, 어시스턴트답변), ...]. 멀티턴 문맥 유지용.
+    history: List[Tuple[str, str]] = []
+    # 특정 RFP 한 건으로 한정하고 싶을 때(원클릭 요약 등) 파일명 지정.
+    filename: Optional[str] = None
 
 
 class ConfigUpdate(BaseModel):
@@ -47,6 +68,8 @@ class ConfigUpdate(BaseModel):
     llm_preset: Optional[str] = None
     embedding_preset: Optional[str] = None
     chunk_preset: Optional[str] = None
+    parser_hwp_preset: Optional[str] = None
+    parser_pdf_preset: Optional[str] = None
     # 프리셋에 포함되지 않는 자유 조정 항목
     llm_temperature: Optional[float] = None
     llm_base_url: Optional[str] = None
@@ -88,13 +111,21 @@ def _rebuild(cfg: Dict[str, Any]) -> bool:
     )
     retriever = build_retriever(vectorstore, chunks, cfg)
     llm = make_llm(cfg)
+    # 질문별 검색기 선택(_select_retriever)을 그래프에 주입한다. _STATE가 먼저
+    # 갱신돼야 _select_retriever가 최신 vectorstore/known_orgs를 참조하므로
+    # graph는 update 이후에 빌드한다.
+    graph = build_graph(cfg, llm, lambda q, fn: _select_retriever(q, fn))
 
     _STATE.update(
         cfg=cfg,
         vectorstore=vectorstore,
         retriever=retriever,
         llm=llm,
+        graph=graph,
+        embedding=embedding,
         cache_key=cache_key,
+        known_orgs=known_orgs(vectorstore),
+        n_vectors=vectorstore.index.ntotal,
     )
     return not have_cache
 
@@ -112,6 +143,10 @@ def _apply_updates(cfg: Dict[str, Any], u: ConfigUpdate) -> Dict[str, Any]:
         cfg = catalog.apply_preset(cfg, "embedding", u.embedding_preset)
     if u.chunk_preset is not None:
         cfg = catalog.apply_preset(cfg, "chunk", u.chunk_preset)
+    if u.parser_hwp_preset is not None:
+        cfg = catalog.apply_preset(cfg, "parser_hwp", u.parser_hwp_preset)
+    if u.parser_pdf_preset is not None:
+        cfg = catalog.apply_preset(cfg, "parser_pdf", u.parser_pdf_preset)
     if u.llm_temperature is not None:
         cfg["llm"]["temperature"] = u.llm_temperature
     if u.llm_base_url is not None:
@@ -160,16 +195,49 @@ def _dedup_sources(docs) -> List[Source]:
     return out
 
 
-def _answer(mode: str, question: str) -> ChatResponse:
-    if "retriever" not in _STATE:
+def _select_retriever(question: str, filename: Optional[str] = None):
+    """검색 범위를 정한다.
+
+    filename이 있으면 그 문서 한 건으로 한정(원클릭 요약 등),
+    없고 질문에 기관명이 있으면 그 기관으로 한정, 아니면 기본 검색기.
+    """
+    cfg = _STATE["cfg"]
+    k = cfg["retriever"].get("k", 4)
+    n = _STATE.get("n_vectors", 10000)
+    if filename:
+        return build_meta_filtered_retriever(
+            _STATE["vectorstore"], k, {"파일명": filename}, n
+        )
+    if cfg["retriever"].get("use_metadata_filter", True):
+        matched = match_orgs(question, _STATE.get("known_orgs", set()))
+        if matched:
+            return build_org_filtered_retriever(_STATE["vectorstore"], k, matched, n)
+    return _STATE["retriever"]
+
+
+def _answer(mode: Optional[str], question: str,
+            history: Optional[List[Tuple[str, str]]] = None,
+            filename: Optional[str] = None) -> ChatResponse:
+    """수퍼바이저 그래프를 거쳐 답변을 생성한다.
+
+    mode가 주어지면 해당 intent("qa"/"summary")를 강제 주입해 분류를 생략하고,
+    None이면 그래프의 classify_intent가 의도를 판정해 라우팅한다(/chat).
+    """
+    if "graph" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
-    answer, docs = generate_answer(
-        _STATE["retriever"], _STATE["llm"], question, mode=mode
-    )
+    state: Dict[str, Any] = {
+        "question": question,
+        "history": history or [],
+        "filename": filename,
+    }
+    if mode is not None:
+        state["intent"] = mode
+    result = _STATE["graph"].invoke(state)
+    answer = result.get("answer", "")
     return ChatResponse(
         answer=answer,
         refused=REFUSAL_MARK in answer,
-        sources=_dedup_sources(docs),
+        sources=_dedup_sources(result.get("sources") or []),
     )
 
 
@@ -203,6 +271,29 @@ def set_config(update: ConfigUpdate) -> Dict[str, Any]:
     }
 
 
+@app.get("/file")
+def get_file(name: str, download: bool = False) -> FileResponse:
+    """근거 RFP 원본 파일을 서빙한다.
+
+    download=false면 인라인(PDF는 브라우저에서 바로 보기, HWP는 브라우저가 받음),
+    download=true면 첨부(다운로드)로 내려준다.
+    name은 data/files 안의 파일명만 허용한다(경로 탈출 차단).
+    """
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
+    base = Path(cfg["data"]["files"]).resolve()
+    target = (base / name).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+
+    disposition = "attachment" if download else "inline"
+    # 한글/공백 파일명은 RFC 5987(filename*)로 인코딩한다.
+    encoded = quote(name)
+    headers = {"Content-Disposition": f"{disposition}; filename*=UTF-8''{encoded}"}
+    return FileResponse(str(target), headers=headers)
+
+
 @app.get("/documents")
 def documents() -> Dict[str, Any]:
     """인덱싱된 문서 목록을 파일명 단위로 반환한다."""
@@ -216,6 +307,7 @@ def documents() -> Dict[str, Any]:
         if fn and fn not in seen:
             seen[fn] = {
                 "파일명": fn,
+                "사업명": m.get("사업명"),
                 "기관": m.get("기관"),
                 "금액": m.get("금액"),
                 "마감일": m.get("마감일"),
@@ -226,11 +318,173 @@ def documents() -> Dict[str, Any]:
     return {"count": len(docs), "documents": docs}
 
 
+def _refresh_index_state(vs, cfg: Dict[str, Any]) -> None:
+    """add_to_vectorstore가 돌려준 vs로 in-memory 검색 상태를 갱신한다.
+
+    업로드/나라장터 지연 인덱싱이 공유한다. (use_bm25면 BM25 부분은 재인덱싱
+    전까지 신규 문서를 포함하지 않는다.)
+    """
+    _STATE.update(
+        vectorstore=vs,
+        retriever=build_retriever(vs, None, cfg),
+        known_orgs=known_orgs(vs),
+        n_vectors=vs.index.ntotal,
+    )
+
+
+_UPLOAD_EXTS = {".hwp", ".hwpx", ".pdf"}
+
+
+class UploadResponse(BaseModel):
+    파일명: str
+    chunks: int           # 새로 추가된 청크 수
+    vectors: int          # 추가 후 전체 벡터 수
+    기관: Optional[str] = None
+    금액: Optional[int] = None
+    마감일: Optional[str] = None
+    사업명: Optional[str] = None
+
+
+@app.post("/upload", response_model=UploadResponse)
+def upload(file: UploadFile = File(...)) -> UploadResponse:
+    """사용자 문서(HWP/PDF)를 업로드해 파싱·청킹 후 FAISS에 영구 추가한다.
+
+    nara_agent와 동일한 흐름: parse_file → metadata_agent → split_documents
+    → add_to_vectorstore. 추가 후 in-memory 검색기/통계를 갱신해 즉시 질문 가능.
+    """
+    if "vectorstore" not in _STATE:
+        raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
+
+    cfg = _STATE["cfg"]
+    name = Path(file.filename or "").name  # 경로 탈출 차단(파일명만 사용)
+    ext = Path(name).suffix.lower()
+    if not name or ext not in _UPLOAD_EXTS:
+        raise HTTPException(
+            status_code=400, detail="HWP·HWPX·PDF 파일만 업로드할 수 있습니다."
+        )
+
+    # data/files에 저장(원본 서빙 /file·목록 /documents와 동일 경로 사용)
+    files_dir = Path(cfg["data"]["files"])
+    files_dir.mkdir(parents=True, exist_ok=True)
+    dest = files_dir / name
+    dest.write_bytes(file.file.read())
+
+    text = parse_file(dest, cfg)
+    if not text:
+        raise HTTPException(
+            status_code=422,
+            detail="문서에서 텍스트를 추출하지 못했습니다(스캔본/미지원 형식일 수 있음).",
+        )
+
+    meta = extract_metadata(text, cfg)
+    doc = Document(
+        page_content=text,
+        metadata={
+            "파일명": name,
+            "기관": meta.get("발주기관"),
+            "금액": meta.get("사업금액"),
+            "마감일": meta.get("마감일"),
+            "파일형식": ext.lstrip("."),
+            "likely_scanned": len(text) < 1000,
+            "fallback_used": False,
+            "사업명": meta.get("사업명"),
+            "uploaded": True,
+        },
+    )
+
+    chunks = split_documents([doc], cfg)
+    vs = add_to_vectorstore(
+        chunks, _STATE["embedding"], cfg["data"]["faiss_cache"], _STATE["cache_key"]
+    )
+    _refresh_index_state(vs, cfg)
+
+    return UploadResponse(
+        파일명=name,
+        chunks=len(chunks),
+        vectors=vs.index.ntotal,
+        기관=meta.get("발주기관"),
+        금액=meta.get("사업금액"),
+        마감일=meta.get("마감일"),
+        사업명=meta.get("사업명"),
+    )
+
+
+class NaraNotice(BaseModel):
+    공고번호: Optional[str] = None
+    사업명: Optional[str] = None
+    기관: Optional[str] = None
+    금액: Optional[int] = None
+    마감일: Optional[str] = None
+    item: Dict[str, Any] = {}     # 지연 인덱싱(/nara/ingest)에 다시 넘길 원본 공고
+
+
+class NaraIngestRequest(BaseModel):
+    item: Dict[str, Any]          # /nara/search가 돌려준 원본 공고 item
+
+
+@app.get("/nara/search")
+def nara_search(q: str = "", date: Optional[str] = None, days: int = 3) -> Dict[str, Any]:
+    """나라장터 공고를 메타데이터만 검색한다(다운로드/임베딩 없음 → 인덱스 불변)."""
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
+    target = None
+    if date:
+        from datetime import datetime
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date는 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        items = nara_agent.search_notices(cfg, keyword=q or None, target_date=target, days=days)
+    except RuntimeError as e:  # NARA_API_KEY 없음
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"나라장터 검색 실패: {e}")
+
+    notices = [
+        NaraNotice(**nara_agent.notice_summary(it), item=it) for it in items
+    ]
+    return {"count": len(notices), "notices": [n.model_dump() for n in notices]}
+
+
+@app.post("/nara/ingest", response_model=UploadResponse)
+def nara_ingest(req: NaraIngestRequest) -> UploadResponse:
+    """선택한 공고 1건만 다운로드·파싱·임베딩해 FAISS에 영구 추가한다(지연 인덱싱)."""
+    if "vectorstore" not in _STATE:
+        raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
+    cfg = _STATE["cfg"]
+    try:
+        result = nara_agent.ingest_notice(
+            cfg, req.item, embedding=_STATE["embedding"], cache_key=_STATE["cache_key"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"공고 인덱싱 실패: {e}")
+
+    if result["chunks"] == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="첨부가 없거나 텍스트를 추출하지 못해 인덱싱할 내용이 없습니다.",
+        )
+
+    _refresh_index_state(result["vectorstore"], cfg)
+    return UploadResponse(
+        파일명=result.get("사업명") or result.get("공고번호") or "(공고)",
+        chunks=result["chunks"],
+        vectors=result["vectorstore"].index.ntotal,
+        기관=result.get("기관"),
+        금액=result.get("금액"),
+        마감일=result.get("마감일"),
+        사업명=result.get("사업명"),
+    )
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _answer("qa", req.question)
+    # mode=None → 그래프가 의도(qa/summary/metadata/collect)를 분류해 라우팅한다.
+    return _answer(None, req.question, req.history, req.filename)
 
 
 @app.post("/summarize", response_model=ChatResponse)
 def summarize(req: ChatRequest) -> ChatResponse:
-    return _answer("summary", req.question)
+    return _answer("summary", req.question, req.history, req.filename)
