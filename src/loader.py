@@ -205,18 +205,29 @@ def _parse_date(value: Any) -> Optional[str]:
 
 
 def _build_metadata(row: pd.Series, filename: str, fmt: str,
-                    likely_scanned: bool, fallback_used: bool) -> Dict[str, Any]:
-    """청크가 상속할 Document 메타데이터를 구성한다."""
+                    likely_scanned: bool, fallback_used: bool,
+                    agent_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """청크가 상속할 Document 메타데이터를 구성한다.
+
+    agent_meta: extract_metadata()의 반환값. CSV 필드가 None일 때 보완용으로 사용.
+    """
+    _am = agent_meta or {}
+
+    기관 = _clean_field(row.get("발주기관"))
+    금액 = _parse_amount(row.get("사업금액"))
+    마감일 = _parse_date(row.get("입찰참여마감일"))
+    사업명 = _clean_field(row.get("사업명"))
+
     return {
         "파일명": filename,
-        "기관": _clean_field(row.get("발주기관")),
-        "금액": _parse_amount(row.get("사업금액")),
-        "마감일": _parse_date(row.get("입찰참여마감일")),
+        "기관": 기관 if 기관 is not None else _am.get("발주기관"),
+        "금액": 금액 if 금액 is not None else _am.get("사업금액"),
+        "마감일": 마감일 if 마감일 is not None else _am.get("마감일"),
         "파일형식": fmt,
         "likely_scanned": likely_scanned,
         "fallback_used": fallback_used,
         # 참고용 보조 필드
-        "사업명": _clean_field(row.get("사업명")),
+        "사업명": 사업명 if 사업명 is not None else _am.get("사업명"),
         "공고번호": _clean_field(row.get("공고번호")),
     }
 
@@ -227,6 +238,28 @@ def _is_hwp(filename: str, fmt: str) -> bool:
 
 def _is_pdf(filename: str, fmt: str) -> bool:
     return filename.lower().endswith(".pdf") or "pdf" in fmt
+
+
+def parse_file(path: Path, cfg: Dict[str, Any]) -> str:
+    """단일 파일을 설정된 파서로 파싱해 정제 텍스트를 반환한다.
+
+    nara_agent 등 외부에서 개별 파일을 파싱할 때 사용하는 공개 API.
+    파싱 실패나 미지원 형식이면 빈 문자열을 반환한다.
+    """
+    parser_cfg = cfg.get("parser", {})
+    filename = path.name
+    fmt = path.suffix.lower().lstrip(".")
+    try:
+        if _is_hwp(filename, fmt):
+            parser = make_hwp_parser(parser_cfg.get("hwp", "pyhwp"))
+        elif _is_pdf(filename, fmt):
+            parser = make_pdf_parser(parser_cfg.get("pdf", "pymupdf"))
+        else:
+            return ""
+        text = _parse_with_timeout(parser, path, PARSE_TIMEOUT)
+    except Exception:
+        return ""
+    return _clean(text) if text else ""
 
 
 def load_documents(cfg: Dict[str, Any]) -> List[Document]:
