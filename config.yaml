@@ -7,7 +7,7 @@ data:
   faiss_cache: data/faiss_rfp
 
 parser:
-  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존)
+  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존) | olefile(OLE 직접파싱, 텍스트만)
   pdf: pymupdf                # pymupdf(빠름/안정) | pdfplumber(표 정밀)
 
 embedding:
@@ -29,6 +29,7 @@ retriever:
   k: 4
   use_bm25: false
   use_reranker: false
+  use_metadata_filter: true   # 질문에 기관명이 있으면 그 기관 문서로만 한정해 검색
 
 eval:
   golden_set: src/evaluation/golden_set.json
@@ -39,7 +40,7 @@ history:
                         # rewrite: 후속 질문을 독립적인 완성형 질문으로 재작성 후 검색 (고도화, 검색 품질 향상)
   max_turns: 5          # 히스토리 최대 포함 턴 수. 너무 크면 토큰 낭비, 너무 작으면 문맥 손실
 
-nara:
-  seen_file: data/nara_seen.json      # 수집 완료 공고번호 기록 (중복 방지)
-  download_dir: data/nara_downloads   # 첨부파일 다운로드 경로
-  page_size: 100                       # API 1회 호출당 조회 건수 (최대 100)
+nara:                   # 나라장터 수집 에이전트(src/agents/nara_agent.py). API 키는 .env의 NARA_API_KEY
+  seen_file: data/nara_seen.json        # 이미 수집한 공고번호 기록(중복 수집 방지)
+  download_dir: data/nara_downloads     # 첨부파일 다운로드 위치
+  page_size: 100                        # API 페이지당 조회 건수
