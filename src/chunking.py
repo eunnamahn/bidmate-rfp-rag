@@ -95,9 +95,7 @@ def _recursive_split(docs: List[Document], cfg: Dict[str, Any]) -> List[Document
     out: List[Document] = []
     for doc in docs:
         if not doc.page_content.strip():
-            # 본문이 비어 있는 문서(파싱 실패/스캔본)는 청크를 만들지 않는다.
             continue
-        # split_documents는 원본 metadata(파일명 포함)를 그대로 상속한다.
         for piece in splitter.split_documents([doc]):
             header = _header(piece.metadata)
             piece.page_content = f"{header}\n{piece.page_content}"
