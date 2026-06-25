@@ -167,20 +167,30 @@ def _extract_zip(zip_path: Path) -> List[Path]:
 
 
 def _collect_attachments(item: Dict, download_dir: Path) -> List[Path]:
-    """item의 ntceSpecDocUrl1~10에서 URL을 읽어 다운로드하고 hwp/pdf 경로를 반환한다.
-
-    - zip이면 압축 해제 후 내부 hwp/pdf만 추린다.
-    - 공고별로 하위 디렉토리(bidNtceNo/)를 만들어 파일을 격리한다.
-    """
     bid_id = item.get("bidNtceNo", "unknown")
     item_dir = download_dir / bid_id
 
-    urls = [
-        url for i in range(1, 11)
-        if (url := (item.get(f"ntceSpecDocUrl{i}") or "").strip())
-    ]
+    _TARGET_KEYWORDS = ["제안요청서", "rfp", "과업지시서", "과업내용서", "기술제안서"]
+    DRY_RUN = False
+
+    def _is_target_file(filename: str) -> bool:
+        return any(kw in filename.lower() for kw in _TARGET_KEYWORDS)
+
     result: List[Path] = []
-    for url in urls:
+    for i in range(1, 11):
+        url = (item.get(f"ntceSpecDocUrl{i}") or "").strip()
+        filename = (item.get(f"ntceSpecFileNm{i}") or "").strip()
+        if not url:
+            continue
+        
+        check_name = filename if filename else unquote(url.split("/")[-1].split("?")[0])
+        if not _is_target_file(check_name):
+            continue
+
+        if DRY_RUN:
+            print(f"    [대상] {check_name}")
+            continue
+
         path = _download_file(url, item_dir)
         if path is None:
             continue
