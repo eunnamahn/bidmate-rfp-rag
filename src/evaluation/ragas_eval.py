@@ -148,14 +148,26 @@ def custom_metrics(records: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
     }
 
 
-def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb
-                  ) -> Dict[str, Any]:
-    """answerable 항목에 대해 RAGAS 5종 지표를 고정 judge로 채점한다."""
+def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb,
+                  metric_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """answerable 항목에 대해 RAGAS 지표를 고정 judge로 채점한다.
+
+    metric_names로 일부 지표만 채점할 수 있다(예: 외부 시스템 답변 평가 시
+    검색 컨텍스트가 없으면 answer_correctness만 선택). 기본은 4종 전부.
+    """
     from ragas import EvaluationDataset, evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
     from ragas.metrics import (answer_correctness, context_precision,
                                context_recall, faithfulness)
+
+    _ALL = {
+        "faithfulness": faithfulness,
+        "context_precision": context_precision,
+        "context_recall": context_recall,
+        "answer_correctness": answer_correctness,
+    }
+    names = metric_names or list(_ALL)
 
     items = [r for r in records if not r["unanswerable"]]
     if not items:
@@ -176,8 +188,7 @@ def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb
         pass
 
     # answer_relevancy는 사실추출 단답을 구조적으로 저평가해 제외한다(정답일수록 손해).
-    metrics = [faithfulness, context_precision, context_recall,
-               answer_correctness]
+    metrics = [_ALL[n] for n in names if n in _ALL]
     result = evaluate(
         EvaluationDataset.from_list(data),
         metrics=metrics,
@@ -188,8 +199,7 @@ def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb
     )
     df = result.to_pandas()
     out: Dict[str, Any] = {}
-    for name in ["faithfulness", "context_precision",
-                 "context_recall", "answer_correctness"]:
+    for name in names:
         if name in df.columns:
             out[name] = _avg(list(df[name]))
     return out
