@@ -32,7 +32,7 @@ flowchart TD
         cls -->|qa| qa["qa 노드<br/>generate_answer(qa)"]
         cls -->|summary| sm["summary 노드<br/>generate_answer(summary)"]
         cls -->|metadata| md["metadata 노드<br/>검색 → extract_metadata"]
-        cls -->|collect| col["collect 노드<br/>배치 실행 안내만"]
+        cls -->|collect| col["collect 노드<br/>나라장터 목록 검색<br/>(메타데이터만)"]
     end
 
     subgraph RT["💬 검색·생성 런타임"]
@@ -95,7 +95,9 @@ sequenceDiagram
         G->>MA: extract_metadata(text)
         MA-->>G: {발주기관·금액·마감일·사업명}
     else intent = collect
-        G-->>G: 배치 실행 안내(수집 미실행)
+        G->>R: (X) 인덱스 미사용
+        G-->>G: 나라장터 목록 API로 메타데이터만 검색<br/>(다운로드/임베딩 없음)
+        Note over G: 본문 적재는 '나라장터' 탭에서 선택한 1건만 지연 인덱싱
     end
 
     G-->>API: answer + sources
@@ -124,19 +126,23 @@ sequenceDiagram
 | `qa` | 기본값 | 검색 → `generate_answer(qa)` |
 | `summary` | "요약/정리/개요" · `/summarize`는 강제 | 검색 → `generate_answer(summary)` 고정 양식 |
 | `metadata` | "메타데이터/기본 정보 추출" | 검색 → `metadata_agent.extract_metadata` |
-| `collect` | "신규 공고/공고 수집/나라장터…수집" | 수집 미실행, 배치 실행 방법 안내 |
+| `collect` | "나라장터/신규·최신 공고/공고 수집·검색" | 목록 API로 메타데이터만 검색해 표시(인덱스 불변) |
 
-## 나라장터 수집 (독립 배치/CLI)
+## 나라장터 (타겟 검색 + 지연 인덱싱)
 
-```bash
-python -m src.agents.nara_agent              # 당일 수집
-python -m src.agents.nara_agent 2024-04-09   # 특정 날짜
-python -m src.agents.nara_agent 2024-04-09 --max 5   # 건수 제한
-```
+전수 적재로 인덱스가 비대해지는 것을 막기 위해 **검색은 가볍게, 적재는 선택한 1건만** 한다.
+
+| 단계 | 함수/엔드포인트 | 동작 |
+|---|---|---|
+| 검색(가벼움) | `nara_agent.search_notices` · `GET /nara/search` | 목록 API로 메타데이터만 조회·키워드 필터. 다운로드/임베딩 없음 → 인덱스 불변 |
+| 지연 적재 | `nara_agent.ingest_notice` · `POST /nara/ingest` | 선택한 공고 1건만 첨부 다운로드→파싱→메타추출→FAISS 추가 |
+| UI | Streamlit ‘나라장터’ 탭 | 키워드 검색 → 결과 목록 → 공고별 ‘인덱싱’ 버튼 |
+| 배치(전체) | `python -m src.agents.nara_agent [YYYY-MM-DD] [--max N]` | 날짜 단위 일괄 수집(필요 시) |
 
 - 환경변수 `NARA_API_KEY`(공공데이터포털 발급) 필요 — `.env`에 저장
-- 수집 산출물: `data/nara_seen.json`(중복 방지), `data/nara_downloads/`(첨부)
-- 수집 문서는 `add_to_vectorstore`로 기존 FAISS에 증분 추가되어 이후 질문에서 검색됨
+- 산출물: `data/nara_seen.json`(중복 방지), `data/nara_downloads/`(첨부)
+- 첨부 중복 제거: 같은 공고서가 hwp·pdf로 첨부되면(파일명이 달라도) **본문 내용 유사도**로 묶어 **HWP를 우선** 1개만 인덱싱(HWP 파싱 실패 시 PDF 폴백). 내용이 다른 문서(공고서·과업지시서 등)는 각각 유지
+- 챗에서 "나라장터 …" 질문 → `collect` 분기가 `search_notices`로 메타데이터만 보여주고, 실제 본문 적재는 ‘나라장터’ 탭에서 고른 공고만 수행
 
 ## 교체 가능 부품 (catalog 프리셋)
 

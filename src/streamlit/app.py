@@ -97,6 +97,35 @@ def _post(endpoint: str, payload: dict, timeout: int = 180):
     return resp.json()
 
 
+def _nara_search(keyword: str, days: int = 3, timeout: int = 60):
+    """나라장터 메타데이터 검색(GET /nara/search). 성공 시 notices 리스트, 실패 시 None."""
+    try:
+        resp = requests.get(
+            f"{BACKEND_URL}/nara/search",
+            params={"q": keyword, "days": days}, timeout=timeout,
+        )
+    except Exception as e:
+        st.error(f"검색 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json().get("notices", [])
+
+
+def _nara_ingest(item: dict, timeout: int = 600):
+    """선택 공고 1건 지연 인덱싱(POST /nara/ingest)."""
+    try:
+        resp = requests.post(f"{BACKEND_URL}/nara/ingest", json={"item": item}, timeout=timeout)
+    except Exception as e:
+        st.error(f"인덱싱 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
 def _upload_file(uploaded, timeout: int = 600):
     """업로드 파일을 백엔드 /upload로 보낸다(멀티파트). 성공 시 dict, 실패 시 None."""
     files = {"file": (uploaded.name, uploaded.getvalue())}
@@ -342,6 +371,56 @@ def _tab_qa():
 
 
 # ──────────────────────────────────────────────
+# 탭 4: 나라장터 (타겟 검색 + 지연 인덱싱)
+# ──────────────────────────────────────────────
+
+def _tab_nara():
+    st.subheader("나라장터 공고 검색")
+    st.caption(
+        "키워드로 공고를 메타데이터만 검색합니다(인덱스에 적재하지 않음). "
+        "필요한 공고만 ‘인덱싱’하면 그 한 건만 본문을 받아 임베딩해 질문할 수 있습니다."
+    )
+    c1, c2, c3 = st.columns([4, 1, 1])
+    keyword = c1.text_input("공고명 키워드", placeholder="예: 이리동중학교 테마식현장체험학습",
+                            label_visibility="collapsed")
+    days = c2.number_input("최근 N일", min_value=1, max_value=30, value=3)
+    search = c3.button("검색", use_container_width=True)
+
+    if search:
+        if not keyword.strip():
+            st.warning("검색 키워드를 입력하세요.")
+        else:
+            with st.spinner("나라장터 조회 중..."):
+                st.session_state.nara_results = _nara_search(keyword.strip(), int(days))
+
+    notices = st.session_state.get("nara_results")
+    if notices is None:
+        return
+    if not notices:
+        st.info("일치하는 공고가 없습니다. 키워드나 기간을 바꿔보세요.")
+        return
+
+    st.caption(f"검색 결과 {len(notices)}건 — 인덱싱할 공고를 선택하세요.")
+    for i, n in enumerate(notices):
+        with st.container(border=True):
+            cols = st.columns([5, 1])
+            cols[0].markdown(
+                f"**{n.get('사업명') or '(제목 없음)'}**  \n"
+                f"기관: {n.get('기관') or '미상'} · 금액: {_won(n.get('금액'))} · "
+                f"마감: {n.get('마감일') or '미상'} · 공고번호: {n.get('공고번호') or '-'}"
+            )
+            if cols[1].button("인덱싱", key=f"nara_ing_{i}", use_container_width=True):
+                with st.spinner("공고 본문 다운로드·임베딩 중..."):
+                    data = _nara_ingest(n.get("item", {}))
+                if data is not None:
+                    _fetch_documents.clear()
+                    st.success(
+                        f"‘{data['파일명']}’ 인덱싱 완료 · 청크 {data['chunks']}개 · "
+                        f"전체 벡터 {data['vectors']:,}개 — 이제 QA에서 질문할 수 있습니다."
+                    )
+
+
+# ──────────────────────────────────────────────
 # 레이아웃
 # ──────────────────────────────────────────────
 
@@ -360,10 +439,12 @@ with st.sidebar:
     st.divider()
     _render_settings_panel()
 
-tab_list, tab_summary, tab_qa = st.tabs(["RFP 목록", "요약", "QA"])
+tab_list, tab_summary, tab_qa, tab_nara = st.tabs(["RFP 목록", "요약", "QA", "나라장터"])
 with tab_list:
     _tab_documents()
 with tab_summary:
     _tab_summary()
 with tab_qa:
     _tab_qa()
+with tab_nara:
+    _tab_nara()

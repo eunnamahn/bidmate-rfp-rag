@@ -27,6 +27,7 @@ from langchain_core.documents import Document
 from pydantic import BaseModel
 
 from src import catalog
+from src.agents import nara_agent
 from src.agents.metadata_agent import extract_metadata
 from src.chunking import split_documents
 from src.config import load_config, make_embedding, make_llm
@@ -317,6 +318,20 @@ def documents() -> Dict[str, Any]:
     return {"count": len(docs), "documents": docs}
 
 
+def _refresh_index_state(vs, cfg: Dict[str, Any]) -> None:
+    """add_to_vectorstore가 돌려준 vs로 in-memory 검색 상태를 갱신한다.
+
+    업로드/나라장터 지연 인덱싱이 공유한다. (use_bm25면 BM25 부분은 재인덱싱
+    전까지 신규 문서를 포함하지 않는다.)
+    """
+    _STATE.update(
+        vectorstore=vs,
+        retriever=build_retriever(vs, None, cfg),
+        known_orgs=known_orgs(vs),
+        n_vectors=vs.index.ntotal,
+    )
+
+
 _UPLOAD_EXTS = {".hwp", ".hwpx", ".pdf"}
 
 
@@ -381,16 +396,7 @@ def upload(file: UploadFile = File(...)) -> UploadResponse:
     vs = add_to_vectorstore(
         chunks, _STATE["embedding"], cfg["data"]["faiss_cache"], _STATE["cache_key"]
     )
-
-    # add_to_vectorstore가 디스크에서 로드/추가/저장한 vs로 in-memory 상태를 교체한다.
-    # (use_bm25면 BM25 부분은 재인덱싱 전까지 신규 문서를 포함하지 않는다.)
-    retriever = build_retriever(vs, None, cfg)
-    _STATE.update(
-        vectorstore=vs,
-        retriever=retriever,
-        known_orgs=known_orgs(vs),
-        n_vectors=vs.index.ntotal,
-    )
+    _refresh_index_state(vs, cfg)
 
     return UploadResponse(
         파일명=name,
@@ -400,6 +406,76 @@ def upload(file: UploadFile = File(...)) -> UploadResponse:
         금액=meta.get("사업금액"),
         마감일=meta.get("마감일"),
         사업명=meta.get("사업명"),
+    )
+
+
+class NaraNotice(BaseModel):
+    공고번호: Optional[str] = None
+    사업명: Optional[str] = None
+    기관: Optional[str] = None
+    금액: Optional[int] = None
+    마감일: Optional[str] = None
+    item: Dict[str, Any] = {}     # 지연 인덱싱(/nara/ingest)에 다시 넘길 원본 공고
+
+
+class NaraIngestRequest(BaseModel):
+    item: Dict[str, Any]          # /nara/search가 돌려준 원본 공고 item
+
+
+@app.get("/nara/search")
+def nara_search(q: str = "", date: Optional[str] = None, days: int = 3) -> Dict[str, Any]:
+    """나라장터 공고를 메타데이터만 검색한다(다운로드/임베딩 없음 → 인덱스 불변)."""
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
+    target = None
+    if date:
+        from datetime import datetime
+        try:
+            target = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date는 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        items = nara_agent.search_notices(cfg, keyword=q or None, target_date=target, days=days)
+    except RuntimeError as e:  # NARA_API_KEY 없음
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"나라장터 검색 실패: {e}")
+
+    notices = [
+        NaraNotice(**nara_agent.notice_summary(it), item=it) for it in items
+    ]
+    return {"count": len(notices), "notices": [n.model_dump() for n in notices]}
+
+
+@app.post("/nara/ingest", response_model=UploadResponse)
+def nara_ingest(req: NaraIngestRequest) -> UploadResponse:
+    """선택한 공고 1건만 다운로드·파싱·임베딩해 FAISS에 영구 추가한다(지연 인덱싱)."""
+    if "vectorstore" not in _STATE:
+        raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
+    cfg = _STATE["cfg"]
+    try:
+        result = nara_agent.ingest_notice(
+            cfg, req.item, embedding=_STATE["embedding"], cache_key=_STATE["cache_key"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"공고 인덱싱 실패: {e}")
+
+    if result["chunks"] == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="첨부가 없거나 텍스트를 추출하지 못해 인덱싱할 내용이 없습니다.",
+        )
+
+    _refresh_index_state(result["vectorstore"], cfg)
+    return UploadResponse(
+        파일명=result.get("사업명") or result.get("공고번호") or "(공고)",
+        chunks=result["chunks"],
+        vectors=result["vectorstore"].index.ntotal,
+        기관=result.get("기관"),
+        금액=result.get("금액"),
+        마감일=result.get("마감일"),
+        사업명=result.get("사업명"),
     )
 
 

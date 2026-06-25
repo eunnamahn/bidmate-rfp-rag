@@ -26,18 +26,16 @@ from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
 from src.agents.metadata_agent import extract_metadata
+from src.agents.nara_agent import notice_summary, search_notices
 from src.generator import generate_answer
 
 # retriever_fn(question, filename) -> retriever
 RetrieverFn = Callable[[str, Optional[str]], Any]
 
-# 나라장터 수집은 그래프에서 실행하지 않고 배치로 안내한다(Q2: 독립 배치/CLI 유지).
-_COLLECT_GUIDE = (
-    "나라장터 신규 공고 수집은 배치 잡으로 실행하세요.\n"
-    "  - 당일 수집:   python -m src.agents.nara_agent\n"
-    "  - 특정 날짜:   python -m src.agents.nara_agent 2024-04-09\n"
-    "  - 건수 제한:   python -m src.agents.nara_agent 2024-04-09 --max 5\n"
-    "수집된 공고는 FAISS에 증분 추가되어 이후 질문에서 검색됩니다."
+# NARA_API_KEY가 없을 때 collect 분기에서 보여줄 안내.
+_NARA_KEY_GUIDE = (
+    "나라장터 검색에는 NARA_API_KEY가 필요합니다(.env에 설정).\n"
+    "공공데이터포털에서 발급 후 백엔드를 재기동하면 채팅에서 바로 공고를 검색할 수 있습니다."
 )
 
 
@@ -56,7 +54,8 @@ class GraphState(TypedDict, total=False):
 # 의도 분류 (키워드 우선, 모호 시 LLM 폴백)
 # ══════════════════════════════════════════════════════
 
-_COLLECT_RE = re.compile(r"(신규\s*공고|공고\s*수집|나라장터.*수집|최신\s*공고|공고.*가져)")
+# 나라장터 언급은 사실상 공고 검색/수집 의도다. 신규/최신/수집/가져오기 표현도 포함.
+_COLLECT_RE = re.compile(r"(나라장터|신규\s*공고|공고\s*수집|최신\s*공고|공고.*가져|공고.*수집)")
 _METADATA_RE = re.compile(r"(메타\s*데이터|발주\s*기관.*마감|기본\s*정보\s*추출|핵심\s*정보\s*추출)")
 _SUMMARY_RE = re.compile(r"(요약|정리해|핵심\s*정리|개요)")
 
@@ -179,8 +178,34 @@ def build_graph(cfg: Dict[str, Any], llm, retriever_fn: RetrieverFn):
         }
 
     def _collect(state: GraphState) -> GraphState:
-        # 그래프에서는 수집을 실행하지 않고 배치 실행 방법만 안내한다.
-        return {"answer": _COLLECT_GUIDE, "sources": [], "metadata": None}
+        # 타겟+지연 인덱싱: 목록 API로 메타데이터만 검색해 보여주고(인덱스 비대화 방지),
+        # 실제 본문 적재는 사용자가 '나라장터' 탭에서 고른 공고 1건만 수행한다.
+        try:
+            items = search_notices(cfg, keyword=state["question"], max_results=8)
+        except RuntimeError:
+            return {"answer": _NARA_KEY_GUIDE, "sources": [], "metadata": None}
+        except Exception as e:
+            return {"answer": f"나라장터 검색에 실패했습니다: {e}", "sources": [], "metadata": None}
+
+        if not items:
+            return {
+                "answer": "최근 나라장터 공고에서 일치하는 건을 찾지 못했습니다. 키워드를 바꿔보세요.",
+                "sources": [],
+                "metadata": None,
+            }
+
+        summaries = [notice_summary(it) for it in items]
+        lines = [
+            f"- {s['사업명']} · {s['기관'] or '미상'} · 마감 {s['마감일'] or '미상'}"
+            f" · [공고번호 {s['공고번호']}]"
+            for s in summaries
+        ]
+        answer = (
+            "나라장터에서 다음 공고를 찾았습니다(메타데이터만 조회 — 인덱스에는 적재하지 않음):\n"
+            + "\n".join(lines)
+            + "\n\n특정 공고의 전체 내용을 질문하려면 ‘나라장터’ 탭에서 그 공고를 선택해 인덱싱하세요."
+        )
+        return {"answer": answer, "sources": [], "metadata": {"nara_search": summaries}}
 
     graph = StateGraph(GraphState)
     graph.add_node("classify_intent", _router)

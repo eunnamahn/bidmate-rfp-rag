@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import zipfile
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote
@@ -248,6 +249,191 @@ def _make_document(
     )
 
 
+# 두 첨부의 내용 토큰 자카드 유사도가 이 값 이상이면 같은 문서로 간주한다.
+# (같은 공고의 hwp/pdf는 파일명이 달라도 본문이 거의 같다.)
+_DUP_SIM_THRESHOLD = 0.6
+
+
+def _content_tokens(text: str) -> set:
+    """내용 비교용 토큰 집합(2자 이상 한글/영숫자). 공백·표기 차이에 견고."""
+    return set(re.findall(r"[가-힣A-Za-z0-9]{2,}", text))
+
+
+def _is_hwp_path(path: Path) -> bool:
+    return path.suffix.lower() in (".hwp", ".hwpx")
+
+
+def _dedup_attachments(paths: List[Path], cfg: Dict[str, Any]) -> List[Tuple[Path, str]]:
+    """같은 공고의 첨부 중 내용이 같은 hwp/pdf를 묶어 1개만 남긴다.
+
+    파일명이 아니라 **본문 내용 유사도**로 묶으므로, 같은 공고서가 서로 다른
+    파일명의 hwp/pdf로 첨부돼도 하나로 합쳐진다. 그룹에서는 **HWP를 우선** 선택해
+    (원본 + 사용자가 원하는 메타데이터 소스), HWP가 없거나 파싱 실패면 PDF를 쓴다.
+    내용이 다른 문서(공고서·과업지시서 등)는 유사도가 낮아 각각 유지된다.
+
+    반환: [(선택된 파일 경로, 파싱 텍스트)] — 텍스트 추출 실패 첨부는 제외.
+    """
+    parsed: List[Tuple[Path, str, set]] = []
+    for p in paths:
+        text = parse_file(p, cfg)
+        if text:
+            parsed.append((p, text, _content_tokens(text)))
+
+    groups: List[List[Tuple[Path, str, set]]] = []
+    for cand in parsed:
+        for group in groups:
+            rep_tokens = group[0][2]
+            union = cand[2] | rep_tokens
+            if union and len(cand[2] & rep_tokens) / len(union) >= _DUP_SIM_THRESHOLD:
+                group.append(cand)
+                break
+        else:
+            groups.append([cand])
+
+    # 그룹마다 HWP 우선, 그다음 텍스트가 많은 것 선택
+    chosen: List[Tuple[Path, str]] = []
+    for group in groups:
+        best = max(group, key=lambda c: (_is_hwp_path(c[0]), len(c[1])))
+        chosen.append((best[0], best[1]))
+    return chosen
+
+
+def _docs_for_item(item: Dict, cfg: Dict[str, Any], download_dir: Path) -> List[Document]:
+    """공고 1건의 첨부를 받아 파싱·메타추출해 Document 리스트로 만든다.
+
+    collect(배치)와 ingest_notice(지연 인덱싱)가 공유하는 단건 처리 로직.
+    같은 문서의 hwp/pdf 중복은 _dedup_attachments로 1개만 남긴다.
+    첨부가 없거나 텍스트 추출 실패면 빈 리스트.
+    """
+    bid_id = item.get("bidNtceNo", "unknown")
+    docs: List[Document] = []
+    for fpath, text in _dedup_attachments(_collect_attachments(item, download_dir), cfg):
+        agent_meta = extract_metadata(text, cfg)
+        docs.append(_make_document(text, fpath, bid_id, item, agent_meta))
+    return docs
+
+
+# ──────────────────────────────────────────────
+# 검색 (메타데이터만 · 인덱스에 적재하지 않음)
+# ──────────────────────────────────────────────
+
+# 검색어에서 의미 없는 호출/조사성 단어를 제거하기 위한 불용어/조사 처리.
+_STOPWORDS = {
+    "나라장터", "에서", "찾아서", "찾아", "설명", "해줘", "공고", "입찰", "수집",
+    "최신", "신규", "관련", "알려", "정보", "내용", "위탁", "용역", "사업",
+}
+_PARTICLE = re.compile(r"(을|를|이|가|은|는|의|로|으로|에서|에|와|과|도|만)$")
+
+
+def _significant_tokens(text: str) -> List[str]:
+    """검색어에서 매칭에 쓸 의미 토큰만 추출한다(조사 제거 + 불용어 제외)."""
+    tokens: List[str] = []
+    for raw in re.findall(r"[가-힣A-Za-z0-9]+", text or ""):
+        word = _PARTICLE.sub("", raw)
+        if len(word) < 2 or word in _STOPWORDS:
+            continue
+        tokens.append(word)
+    return tokens
+
+
+def notice_summary(item: Dict) -> Dict[str, Any]:
+    """API 공고 item에서 표시용 메타데이터만 뽑는다(다운로드/임베딩 없음)."""
+    openg_raw = item.get("opengDt", "") or ""
+    마감일 = _parse_date(openg_raw[:8]) if len(openg_raw) >= 8 else None
+    return {
+        "공고번호": item.get("bidNtceNo"),
+        "사업명": item.get("bidNtceNm"),
+        "기관": item.get("dmndInsttNm") or item.get("ntceInsttNm"),
+        "금액": _parse_amount(item.get("presmptPrce")) or _parse_amount(item.get("asignBdgtAmt")),
+        "마감일": 마감일,
+    }
+
+
+def search_notices(
+    cfg: Dict[str, Any],
+    keyword: Optional[str] = None,
+    target_date: Optional[date] = None,
+    days: int = 3,
+    max_results: int = 10,
+    max_pages: int = 5,
+) -> List[Dict]:
+    """나라장터 목록 API로 공고를 검색해 원본 item 리스트를 반환한다(메타데이터만).
+
+    첨부 다운로드나 임베딩을 하지 않으므로 가볍다. keyword가 있으면 사업명에
+    의미 토큰이 포함된 공고만 추려 매칭 수가 많은 순으로 정렬한다.
+
+    target_date가 있으면 그날만, 없으면 최근 days일을 조회한다.
+    max_pages로 조회량을 제한해(메타데이터라도) 과도한 페이지네이션을 막는다.
+
+    Raises:
+        RuntimeError: NARA_API_KEY가 없을 때.
+    """
+    api_key = os.getenv("NARA_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            ".env에 NARA_API_KEY가 없습니다. 공공데이터포털에서 발급 후 설정하세요."
+        )
+
+    page_size = int(cfg.get("nara", {}).get("page_size", 100))
+    end = target_date or date.today()
+    start = end if target_date else end - timedelta(days=max(0, days - 1))
+    inqry_bgn = start.strftime("%Y%m%d") + "0000"
+    inqry_end = end.strftime("%Y%m%d") + "2359"
+
+    items: List[Dict] = []
+    for page_no in range(1, max_pages + 1):
+        page_items, total = _fetch_page(api_key, inqry_bgn, inqry_end, page_no, page_size)
+        items.extend(page_items)
+        if not page_items or len(items) >= total:
+            break
+
+    tokens = _significant_tokens(keyword) if keyword else []
+    if tokens:
+        scored: List[Tuple[int, Dict]] = []
+        for it in items:
+            name = it.get("bidNtceNm") or ""
+            hits = sum(1 for t in tokens if t in name)
+            if hits:
+                scored.append((hits, it))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        items = [it for _, it in scored]
+
+    return items[:max_results]
+
+
+def ingest_notice(
+    cfg: Dict[str, Any],
+    item: Dict,
+    embedding=None,
+    cache_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """공고 1건만 다운로드·파싱·임베딩해 FAISS에 추가한다(지연 인덱싱).
+
+    Args:
+        cfg:       설정 dict.
+        item:      search_notices가 돌려준 원본 공고 item.
+        embedding: 임베딩 객체(없으면 make_embedding(cfg)). 백엔드는 _STATE 것 재사용.
+        cache_key: 대상 캐시 키(없으면 make_cache_key(cfg)).
+
+    Returns:
+        {공고번호, 사업명, 기관, 금액, 마감일, chunks, vectorstore}.
+        chunks=0이면 첨부 없음/추출 실패.
+    """
+    download_dir = Path(cfg.get("nara", {}).get("download_dir", "data/nara_downloads"))
+    docs = _docs_for_item(item, cfg, download_dir)
+    summary = notice_summary(item)
+
+    if not docs:
+        return {**summary, "chunks": 0, "vectorstore": None}
+
+    chunks = split_documents(docs, cfg)
+    embedding = embedding or make_embedding(cfg)
+    vs = add_to_vectorstore(
+        chunks, embedding, cfg["data"]["faiss_cache"], cache_key or make_cache_key(cfg)
+    )
+    return {**summary, "chunks": len(chunks), "vectorstore": vs}
+
+
 # ──────────────────────────────────────────────
 # 공개 진입점
 # ──────────────────────────────────────────────
@@ -306,18 +492,11 @@ def collect(cfg: Dict[str, Any], target_date: Optional[date] = None, max_collect
         ntce_nm = (item.get("bidNtceNm") or "")[:50]
         print(f"  [수집] {bid_id}  {ntce_nm}", flush=True)
 
-        files = _collect_attachments(item, download_dir)
         new_ids.add(bid_id)  # 첨부파일 없어도 본 공고로 기록해 재시도 방지
-
-        for fpath in files:
-            text = parse_file(fpath, cfg)
-            if not text:
-                continue
-
-            agent_meta = extract_metadata(text, cfg)
-            doc = _make_document(text, fpath, bid_id, item, agent_meta)
-            new_docs.append(doc)
-            print(f"    [완료] {fpath.name} ({len(text):,}자)", flush=True)
+        item_docs = _docs_for_item(item, cfg, download_dir)
+        new_docs.extend(item_docs)
+        for d in item_docs:
+            print(f"    [완료] {d.metadata['파일명']} ({len(d.page_content):,}자)", flush=True)
 
     if new_docs:
         print(f"[나라장터] {len(new_docs)}개 문서 청킹 및 인덱싱 중...", flush=True)
