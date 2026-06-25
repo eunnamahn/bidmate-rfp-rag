@@ -5,7 +5,7 @@
     어떤 파싱/청킹 조합이 가장 좋은 청크를 만드는지 비교한다.
     RAGAS 점수 나오면 이 결과와 함께 최적 조합을 선정한다.
 
-실험 항목 (총 32가지):
+실험 항목 (총 48가지):
     [HWP 파서]   pyhwp / hwp-hwpx-parser / olefile  (3가지)
     [PDF 파서]   pymupdf / pdfplumber                (2가지)
     [청킹 전략]  recursive / section                 (2가지)
