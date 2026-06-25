@@ -97,6 +97,20 @@ def _post(endpoint: str, payload: dict, timeout: int = 180):
     return resp.json()
 
 
+def _upload_file(uploaded, timeout: int = 600):
+    """업로드 파일을 백엔드 /upload로 보낸다(멀티파트). 성공 시 dict, 실패 시 None."""
+    files = {"file": (uploaded.name, uploaded.getvalue())}
+    try:
+        resp = requests.post(f"{BACKEND_URL}/upload", files=files, timeout=timeout)
+    except Exception as e:
+        st.error(f"업로드 실패: {e}")
+        return None
+    if resp.status_code != 200:
+        st.error(f"오류 {resp.status_code}: {resp.text}")
+        return None
+    return resp.json()
+
+
 # ──────────────────────────────────────────────
 # 설정 패널 (사이드바)
 # ──────────────────────────────────────────────
@@ -115,6 +129,28 @@ def _preset_selectbox(label, group, help_reindex=False):
         label, keys, index=index,
         format_func=lambda k: label_map.get(k, k), help=help_txt,
     )
+
+
+def _render_upload_panel():
+    """문서(HWP/PDF) 업로드 → 백엔드 /upload → FAISS 영구 추가."""
+    st.header("문서 업로드")
+    uploaded = st.file_uploader(
+        "HWP·HWPX·PDF 파일", type=["hwp", "hwpx", "pdf"],
+        accept_multiple_files=False,
+        help="업로드하면 파싱·인덱싱되어 바로 질문/요약에 사용됩니다.",
+    )
+    if uploaded is not None and st.button("업로드 & 인덱싱", use_container_width=True):
+        with st.spinner(f"‘{uploaded.name}’ 파싱·인덱싱 중..."):
+            data = _upload_file(uploaded)
+        if data is not None:
+            _fetch_documents.clear()  # 새 문서가 목록에 보이도록 캐시 무효화
+            st.success(
+                f"‘{data['파일명']}’ 추가됨 · 청크 {data['chunks']}개 · "
+                f"전체 벡터 {data['vectors']:,}개"
+            )
+            기관 = data.get("기관") or "미상"
+            st.caption(f"추출: {기관} · {_won(data.get('금액'))} · 마감 {data.get('마감일') or '미상'}")
+            st.rerun()
 
 
 def _render_settings_panel():
@@ -319,6 +355,8 @@ with st.sidebar:
             st.warning(f"백엔드 준비 중: {h}")
     except Exception as e:
         st.error(f"백엔드에 연결할 수 없습니다.\n{BACKEND_URL}\n{e}")
+    st.divider()
+    _render_upload_panel()
     st.divider()
     _render_settings_panel()
 

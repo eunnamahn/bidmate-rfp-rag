@@ -4,6 +4,10 @@
 # 저장된 벡터스토어 캐시
 data/faiss_rfp/
 
+# 나라장터 수집 산출물 (nara_agent)
+data/nara_downloads/
+data/nara_seen.json
+
 # 원본 데이터/메타데이터 (저장소는 코드만, 데이터는 직접 배치)
 data/files/
 data/data_list.csv

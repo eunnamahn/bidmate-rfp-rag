@@ -347,6 +347,34 @@ def _extract_hwp(path: Path, primary, fallback) -> tuple:
         return "", True
 
 
+def parse_file(path: Path, cfg: Dict[str, Any]) -> str:
+    """단일 파일을 설정된 파서로 파싱해 정제 텍스트를 반환한다.
+
+    nara_agent 등 외부에서 개별 파일을 파싱할 때 쓰는 공개 API.
+    HWP는 load_documents와 동일하게 1차 파서 실패/빈 결과 시 대체 파서로 폴백한다.
+    파싱 실패나 미지원 형식이면 빈 문자열을 반환한다.
+    """
+    parser_cfg = cfg.get("parser", {})
+    filename = path.name
+    fmt = path.suffix.lower().lstrip(".")
+    try:
+        if _is_hwp(filename, fmt):
+            hwp_name = parser_cfg.get("hwp", "pyhwp")
+            primary = make_hwp_parser(hwp_name)
+            fallback = make_hwp_parser(
+                "hwp-hwpx-parser" if hwp_name != "hwp-hwpx-parser" else "pyhwp"
+            )
+            text, _ = _extract_hwp(path, primary, fallback)
+        elif _is_pdf(filename, fmt):
+            parser = make_pdf_parser(parser_cfg.get("pdf", "pymupdf"))
+            text = _parse_with_timeout(parser, path, PARSE_TIMEOUT)
+        else:
+            return ""
+    except (FuturesTimeout, Exception):
+        return ""
+    return _clean(text) if text and text.strip() else ""
+
+
 def load_documents(cfg: Dict[str, Any]) -> List[Document]:
     """data_list.csv를 읽고 각 행의 원본 파일을 파싱해 Document 리스트로 반환한다.
 

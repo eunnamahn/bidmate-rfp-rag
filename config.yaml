@@ -39,3 +39,8 @@ history:
   strategy: "full"      # full   : 대화 히스토리를 통째로 프롬프트에 포함 (베이스라인, 단순/안정적)
                         # rewrite: 후속 질문을 독립적인 완성형 질문으로 재작성 후 검색 (고도화, 검색 품질 향상)
   max_turns: 5          # 히스토리 최대 포함 턴 수. 너무 크면 토큰 낭비, 너무 작으면 문맥 손실
+
+nara:                   # 나라장터 수집 에이전트(src/agents/nara_agent.py). API 키는 .env의 NARA_API_KEY
+  seen_file: data/nara_seen.json        # 이미 수집한 공고번호 기록(중복 수집 방지)
+  download_dir: data/nara_downloads     # 첨부파일 다운로드 위치
+  page_size: 100                        # API 페이지당 조회 건수
