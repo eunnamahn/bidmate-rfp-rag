@@ -11,10 +11,12 @@ config.yaml의 history.strategy로 전환한다.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
+from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
@@ -167,6 +169,29 @@ def _number_sources(docs: List[Document]) -> Tuple[Dict[str, int], List[Document
     return order, unique
 
 
+def _norm_match(text: Any) -> str:
+    """매칭용 정규화: 공백/괄호 제거 + 소문자화."""
+    return re.sub(r"[\s()（）]", "", str(text)).lower()
+
+
+def _docs_mentioned_in_answer(docs: List[Document], answer: str) -> List[Document]:
+    """답변 본문에 기관명/사업명이 실제로 등장한 문서만 추린다.
+
+    모델이 [사용근거] 인용을 빠뜨렸을 때 검색 문서 '전부'를 근거로 노출하면
+    질문과 무관한 검색 결과(예: 다른 기관의 유사 시스템 RFP)까지 출처로 표시된다.
+    답변이 실제로 언급한 기관/사업명을 가진 문서만 남겨 이 오노출을 막는다.
+    """
+    a = _norm_match(answer)
+    picked: List[Document] = []
+    for d in docs:
+        for key in ("기관", "사업명"):
+            v = _norm_match(d.metadata.get(key) or "")
+            if len(v) >= 3 and v in a:
+                picked.append(d)
+                break
+    return picked
+
+
 def _format_labeled(docs: List[Document], order: Dict[str, int]) -> str:
     """각 청크 앞에 [자료 N] 라벨을 붙여 문맥 문자열을 만든다(N=파일명별 번호)."""
     parts = []
@@ -266,16 +291,285 @@ def generate_answer(
     cited = _parse_citation(raw)
     answer = _strip_citation(raw)
 
-    # 출처 선정: 인용한 번호만 -> (인용 없으면) 거절이면 없음, 아니면 전체로 폴백
+    # 출처 선정 우선순위:
+    #   1) 모델이 인용한 번호([사용근거: ...])가 있으면 그 문서만.
+    #   2) 거절 답변이면 출처 없음.
+    #   3) 인용이 없거나 무효면 답변에 실제로 언급된(기관/사업명) 문서만.
+    #      그래도 못 찾으면 가장 관련도 높은 1건만(검색 전체를 근거로 띄우지 않는다).
     if cited:
         used = [unique_docs[n - 1] for n in cited if 1 <= n <= len(unique_docs)]
-        used = used or unique_docs
     elif _REFUSAL_MARK in answer:
         used = []
     else:
-        used = unique_docs
+        used = []
+    if not used and _REFUSAL_MARK not in answer:
+        used = _docs_mentioned_in_answer(unique_docs, answer) or unique_docs[:1]
 
     return answer, used
+
+
+# ══════════════════════════════════════════════════════
+# 다이어그램 / 체크리스트 / 인포그래픽 생성 (구조화 출력)
+#   검색 → 전용 프롬프트 → LLM. 결과는 챗 액션 버튼에서 사용한다.
+# ══════════════════════════════════════════════════════
+
+_SYSTEM_DIAGRAM_EVAL = """당신은 공공기관 RFP 문서를 분석하는 전문가입니다.
+주어진 RFP 문서에서 평가배점 구조를 추출하여 Mermaid 다이어그램으로 출력하세요.
+
+[출력 규칙]
+1. 반드시 ```mermaid 코드 블록으로 시작하고 ``` 로 끝내세요.
+2. mindmap 또는 graph TD 형식을 사용하세요.
+3. 평가항목과 배점(점수)을 노드에 포함하세요.
+4. 문서에 평가배점 정보가 없으면 "문서에서 평가배점 정보를 확인할 수 없습니다."라고만 답하세요.
+5. 코드 블록 외에 설명을 추가하지 마세요.
+
+[출력 예시]
+```mermaid
+graph TD
+    A[평가 총점: 100점] --> B[기술평가 80점]
+    A --> C[가격평가 20점]
+    B --> D[수행능력 30점]
+    B --> E[기술제안 50점]
+```"""
+
+_SYSTEM_DIAGRAM_GANTT = """당신은 공공기관 RFP 문서를 분석하는 전문가입니다.
+주어진 RFP 문서에서 입찰 일정을 추출하여 Mermaid Gantt 다이어그램으로 출력하세요.
+
+[출력 규칙]
+1. 반드시 ```mermaid 코드 블록으로 시작하고 ``` 로 끝내세요.
+2. gantt 형식을 사용하세요.
+3. dateFormat YYYY-MM-DD 를 사용하세요.
+4. 날짜가 불명확한 경우 after 구문으로 상대적 순서만 표현하세요.
+5. 문서에 일정 정보가 없으면 "문서에서 일정 정보를 확인할 수 없습니다."라고만 답하세요.
+6. 코드 블록 외에 설명을 추가하지 마세요.
+
+[출력 예시]
+```mermaid
+gantt
+    title 입찰 일정
+    dateFormat YYYY-MM-DD
+    section 공고
+        입찰공고          :done, 2024-01-01, 2024-01-10
+    section 질의
+        질의서 접수       :active, 2024-01-10, 5d
+    section 입찰
+        입찰서 제출       :2024-01-15, 3d
+        개찰              :milestone, 2024-01-18, 0d
+```"""
+
+_SYSTEM_DIAGRAM_ELIGIBILITY = """당신은 공공기관 RFP 문서를 분석하는 전문가입니다.
+주어진 RFP 문서에서 입찰 참가자격 요건을 추출하여 적격성 판정 흐름도를 Mermaid 다이어그램으로 출력하세요.
+
+[출력 규칙]
+1. 반드시 ```mermaid 코드 블록으로 시작하고 ``` 로 끝내세요.
+2. flowchart TD 형식을 사용하세요.
+3. 각 자격 요건을 조건 분기(다이아몬드)로 표현하고, 충족/미충족 경로를 나누세요.
+4. 최종 결론은 "입찰 참가 가능" 또는 "입찰 참가 불가"로 끝내세요.
+5. 문서에 자격 요건 정보가 없으면 "문서에서 참가자격 정보를 확인할 수 없습니다."라고만 답하세요.
+6. 코드 블록 외에 설명을 추가하지 마세요.
+
+[출력 예시]
+```mermaid
+flowchart TD
+    A[입찰 참가 신청] --> B{면허 보유?}
+    B -- 예 --> C{실적 요건 충족?}
+    B -- 아니오 --> Z[입찰 참가 불가]
+    C -- 예 --> D[입찰 참가 가능]
+    C -- 아니오 --> Z
+```"""
+
+# 시스템 프롬프트에 JSON/Mermaid 예시의 중괄호가 많아, f-string 템플릿으로 파싱되지 않도록
+# 고정 SystemMessage로 넘긴다(변수 치환은 human 메시지의 {context}에만 적용).
+DIAGRAM_PROMPTS = {
+    "evaluation": ChatPromptTemplate.from_messages([
+        SystemMessage(content=_SYSTEM_DIAGRAM_EVAL),
+        ("human", "문맥:\n{context}\n\n위 RFP의 평가배점 구조를 Mermaid 다이어그램으로 출력하세요."),
+    ]),
+    "gantt": ChatPromptTemplate.from_messages([
+        SystemMessage(content=_SYSTEM_DIAGRAM_GANTT),
+        ("human", "문맥:\n{context}\n\n위 RFP의 입찰 일정을 Mermaid Gantt 다이어그램으로 출력하세요."),
+    ]),
+    "eligibility": ChatPromptTemplate.from_messages([
+        SystemMessage(content=_SYSTEM_DIAGRAM_ELIGIBILITY),
+        ("human", "문맥:\n{context}\n\n위 RFP의 입찰 참가자격 요건을 적격성 판정 흐름도로 출력하세요."),
+    ]),
+}
+
+
+def generate_diagram(
+    retriever,
+    llm,
+    question: str,
+    diagram_type: str,
+) -> Tuple[str, List[Document]]:
+    """RFP 문서에서 다이어그램을 생성한다.
+
+    Args:
+        retriever    : build_retriever()로 만든 검색기
+        llm          : ChatOpenAI 또는 ChatOllama 인스턴스
+        question     : 사용자가 입력한 사업명 또는 검색 쿼리
+        diagram_type : "evaluation" | "gantt" | "eligibility"
+
+    Returns:
+        (mermaid_code, source_docs)
+    """
+    if diagram_type not in DIAGRAM_PROMPTS:
+        raise ValueError(f"지원하지 않는 diagram_type: {diagram_type}")
+
+    docs = retriever.invoke(question)
+    context = _format_docs(docs)
+    prompt = DIAGRAM_PROMPTS[diagram_type]
+    chain = prompt | llm | StrOutputParser()
+    result = chain.invoke({"context": context})
+    return result, docs
+
+
+_SYSTEM_CHECKLIST = """당신은 공공기관 RFP 문서를 분석하는 전문 입찰 컨설턴트입니다.
+주어진 RFP 문서에서 입찰 준비에 필요한 항목을 카테고리별로 추출하여 JSON으로 출력하세요.
+
+[추출 대상 카테고리]
+1. "제출서류" - 입찰 시 제출해야 하는 서류 목록
+2. "참가자격" - 입찰 참가자격 요건 (면허, 실적, 자본금, 인력 등)
+3. "평가준비" - 기술평가·제안서 작성을 위해 준비해야 할 항목
+4. "일정확인" - 놓치면 안 되는 핵심 일정 및 마감
+
+[출력 규칙]
+1. 반드시 아래 JSON 형식만 출력하세요. 코드 블록(```)이나 설명을 추가하지 마세요.
+2. 각 항목은 "label"(항목명)과 "note"(비고/조건, 없으면 빈 문자열)로 구성하세요.
+3. 문서에서 확인되지 않는 카테고리는 빈 배열([])로 남기세요.
+4. 항목은 중복 없이 구체적으로 작성하세요.
+
+[출력 형식]
+{
+  "title": "사업명",
+  "categories": [
+    {
+      "name": "제출서류",
+      "items": [
+        {"label": "입찰참가신청서", "note": "소정 양식 사용"},
+        {"label": "사업자등록증 사본", "note": ""}
+      ]
+    },
+    {
+      "name": "참가자격",
+      "items": [
+        {"label": "소프트웨어사업자 신고 확인서", "note": ""},
+        {"label": "동종 사업 수행실적 1건 이상", "note": "최근 5년 이내"}
+      ]
+    },
+    {
+      "name": "평가준비",
+      "items": [
+        {"label": "기술제안서 작성", "note": "OOO 방법론 포함"},
+        {"label": "수행조직 구성안", "note": "PM 포함 최소 3인"}
+      ]
+    },
+    {
+      "name": "일정확인",
+      "items": [
+        {"label": "질의서 제출 마감", "note": "입찰공고일로부터 7일 이내"},
+        {"label": "입찰서 제출 마감", "note": "2024-03-15 18:00"}
+      ]
+    }
+  ]
+}"""
+
+_CHECKLIST_PROMPT = ChatPromptTemplate.from_messages([
+    SystemMessage(content=_SYSTEM_CHECKLIST),
+    ("human", "문맥:\n{context}\n\n위 RFP의 입찰 준비 체크리스트를 JSON으로 출력하세요."),
+])
+
+
+_SYSTEM_INFOGRAPHIC = """당신은 공공기관 RFP 문서를 분석하는 전문 입찰 컨설턴트입니다.
+주어진 RFP 문서에서 인포그래픽 카드에 표시할 핵심 정보를 추출하여 JSON으로 출력하세요.
+
+[출력 규칙]
+1. 반드시 아래 JSON 형식만 출력하세요. 코드 블록(```)이나 설명을 추가하지 마세요.
+2. 문서에서 확인되지 않는 항목은 null로 표기하세요.
+3. evaluation_scores는 평가항목과 배점을 최대 5개까지만 추출하세요.
+4. key_requirements는 핵심 요구사항을 3~5개 간결한 문장으로 추출하세요.
+5. 모든 문자열은 한국어로 작성하세요.
+
+[출력 형식]
+{
+  "title": "사업명",
+  "agency": "발주기관명",
+  "budget": "50억원",
+  "deadline": "2024.03.15",
+  "contract_type": "협상에 의한 계약",
+  "duration": "24개월",
+  "evaluation_scores": [
+    {"name": "기술평가", "score": 80, "max_score": 100},
+    {"name": "가격평가", "score": 20, "max_score": 100}
+  ],
+  "key_requirements": [
+    "AWS/Azure 기반 클라우드 전환",
+    "PM 10년 이상 경력 필수",
+    "보안 인증 (ISMS) 보유"
+  ],
+  "qualification_summary": "소프트웨어사업자 신고 업체, 동종 실적 1건 이상"
+}"""
+
+_INFOGRAPHIC_PROMPT = ChatPromptTemplate.from_messages([
+    SystemMessage(content=_SYSTEM_INFOGRAPHIC),
+    ("human", "문맥:\n{context}\n\n위 RFP의 인포그래픽 카드용 핵심 정보를 JSON으로 출력하세요."),
+])
+
+
+def _parse_json_block(raw: str) -> Optional[Dict]:
+    """LLM 응답에서 JSON을 파싱한다(```json 코드 블록도 처리). 실패 시 None."""
+    text = raw.strip()
+    if "```" in text:
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def generate_infographic_data(
+    retriever,
+    llm,
+    question: str,
+) -> Tuple[Dict, List[Document]]:
+    """RFP 문서에서 인포그래픽 카드에 표시할 핵심 정보를 JSON으로 추출한다.
+
+    Returns:
+        (info_dict, source_docs). 파싱 실패 시 info_dict={"parse_error": 원본}.
+    """
+    docs = retriever.invoke(question)
+    context = _format_docs(docs)
+    chain = _INFOGRAPHIC_PROMPT | llm | StrOutputParser()
+    raw = chain.invoke({"context": context})
+    result = _parse_json_block(raw)
+    if result is None:
+        result = {"parse_error": raw}
+    return result, docs
+
+
+def generate_checklist(
+    retriever,
+    llm,
+    question: str,
+) -> Tuple[Dict, List[Document]]:
+    """RFP 문서에서 입찰 준비 체크리스트를 카테고리별 JSON으로 추출한다.
+
+    Returns:
+        (checklist_dict, source_docs)
+        checklist_dict 구조: {"title": str, "categories": [{"name": str, "items": [...]}]}
+        파싱 실패 시 {"title": question, "categories": [], "parse_error": 원본}.
+    """
+    docs = retriever.invoke(question)
+    context = _format_docs(docs)
+    chain = _CHECKLIST_PROMPT | llm | StrOutputParser()
+    raw = chain.invoke({"context": context})
+    result = _parse_json_block(raw)
+    if result is None:
+        result = {"title": question, "categories": [], "parse_error": raw}
+    return result, docs
 
 
 def build_chain(retriever, llm, mode: str = "qa"):

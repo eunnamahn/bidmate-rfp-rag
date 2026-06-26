@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
@@ -38,7 +39,7 @@ from urllib.parse import unquote
 import requests
 from langchain_core.documents import Document
 
-from src.agents.metadata_agent import extract_metadata
+from src.agents.metadata_agent import append_metadata_row, extract_metadata
 from src.chunking import split_documents
 from src.config import make_embedding
 from src.embedding import add_to_vectorstore, make_cache_key
@@ -172,21 +173,37 @@ def _extract_zip(zip_path: Path) -> List[Path]:
     return extracted
 
 
+# 첨부 중 RFP 본문에 해당하는 파일만 수집하기 위한 파일명 키워드.
+# (공고서·붙임 양식 등 부수 문서까지 전수 적재하면 벡터DB가 비대해지므로 본문류만 받는다.)
+_RFP_FILENAME_KEYWORDS = ["제안요청서", "rfp", "과업지시서", "과업내용서", "기술제안서"]
+
+
+def _is_rfp_attachment(filename: str) -> bool:
+    """파일명이 RFP 본문류(제안요청서/과업지시서 등)인지 판별한다."""
+    return any(kw in filename.lower() for kw in _RFP_FILENAME_KEYWORDS)
+
+
 def _collect_attachments(item: Dict, download_dir: Path) -> List[Path]:
     """item의 ntceSpecDocUrl1~10에서 URL을 읽어 다운로드하고 hwp/pdf 경로를 반환한다.
 
+    - 파일명이 RFP 본문류(제안요청서·과업지시서 등)인 첨부만 다운로드한다(부수 문서 제외).
     - zip이면 압축 해제 후 내부 hwp/pdf만 추린다.
     - 공고별로 하위 디렉토리(bidNtceNo/)를 만들어 파일을 격리한다.
     """
     bid_id = item.get("bidNtceNo", "unknown")
     item_dir = download_dir / bid_id
 
-    urls = [
-        url for i in range(1, 11)
-        if (url := (item.get(f"ntceSpecDocUrl{i}") or "").strip())
-    ]
     result: List[Path] = []
-    for url in urls:
+    for i in range(1, 11):
+        url = (item.get(f"ntceSpecDocUrl{i}") or "").strip()
+        if not url:
+            continue
+        # 파일명은 메타(ntceSpecFileNm)를 우선 쓰고, 없으면 URL 끝에서 추출한다.
+        filename = (item.get(f"ntceSpecFileNm{i}") or "").strip()
+        check_name = filename or unquote(url.split("/")[-1].split("?")[0])
+        if not _is_rfp_attachment(check_name):
+            continue
+
         path = _download_file(url, item_dir)
         if path is None:
             continue
@@ -298,18 +315,63 @@ def _dedup_attachments(paths: List[Path], cfg: Dict[str, Any]) -> List[Tuple[Pat
     return chosen
 
 
+def _copy_into_files(src: Path, files_dir: Path, bid_id: str) -> Path:
+    """나라장터 첨부를 원본 코퍼스 디렉토리(data/files)로 복사하고 그 경로를 반환한다.
+
+    전체 재빌드 시 load_documents는 data/files/<파일명>을 재파싱하므로, 지연 인덱싱한
+    공고도 재빌드와 일관되려면 파일이 data/files에 있어야 한다. 이름이 충돌하면 공고번호를
+    붙여 회피한다(같은 크기 파일이 이미 있으면 동일 파일로 보고 그대로 재사용).
+    """
+    files_dir.mkdir(parents=True, exist_ok=True)
+    dest = files_dir / src.name
+    if dest.exists():
+        if dest.stat().st_size == src.stat().st_size:
+            return dest
+        dest = files_dir / f"{src.stem}__{bid_id}{src.suffix}"
+        n = 1
+        while dest.exists() and dest.stat().st_size != src.stat().st_size:
+            dest = files_dir / f"{src.stem}__{bid_id}_{n}{src.suffix}"
+            n += 1
+        if dest.exists():
+            return dest
+    shutil.copy2(src, dest)
+    return dest
+
+
 def _docs_for_item(item: Dict, cfg: Dict[str, Any], download_dir: Path) -> List[Document]:
     """공고 1건의 첨부를 받아 파싱·메타추출해 Document 리스트로 만든다.
 
     collect(배치)와 ingest_notice(지연 인덱싱)가 공유하는 단건 처리 로직.
     같은 문서의 hwp/pdf 중복은 _dedup_attachments로 1개만 남긴다.
     첨부가 없거나 텍스트 추출 실패면 빈 리스트.
+
+    추가된 문서는 (1) 원본 코퍼스(data/files)로 복사해 전체 재빌드와 일관되게 하고,
+    (2) 메타데이터를 data_list.csv 대장에 자동 기록한다.
     """
     bid_id = item.get("bidNtceNo", "unknown")
+    files_dir = Path(cfg["data"]["files"])
+    csv_path = cfg["data"]["csv"]
     docs: List[Document] = []
     for fpath, text in _dedup_attachments(_collect_attachments(item, download_dir), cfg):
         agent_meta = extract_metadata(text, cfg)
-        docs.append(_make_document(text, fpath, bid_id, item, agent_meta))
+        # 재빌드 일관성: 첨부를 data/files로 복사하고 그 경로 기준으로 Document를 만든다.
+        dest = _copy_into_files(fpath, files_dir, bid_id)
+        doc = _make_document(text, dest, bid_id, item, agent_meta)
+        docs.append(doc)
+        # 메타데이터 대장(csv) 자동 기록(중복 파일명은 내부에서 건너뜀, 실패는 무시).
+        try:
+            append_metadata_row(
+                csv_path, dest.name, dest.suffix.lower().lstrip("."),
+                {
+                    "발주기관": doc.metadata.get("기관"),
+                    "사업금액": doc.metadata.get("금액"),
+                    "마감일": doc.metadata.get("마감일"),
+                    "사업명": doc.metadata.get("사업명"),
+                },
+                텍스트=text, 공고번호=bid_id,
+            )
+        except Exception:
+            pass
     return docs
 
 
@@ -431,7 +493,14 @@ def ingest_notice(
     vs = add_to_vectorstore(
         chunks, embedding, cfg["data"]["faiss_cache"], cache_key or make_cache_key(cfg)
     )
-    return {**summary, "chunks": len(chunks), "vectorstore": vs}
+    # 대표 문서 파일명(data/files 기준)도 함께 돌려준다. UI가 이걸 '활성 문서'로 지정해야
+    # 에이전트 검색이 이 공고로 정확히 한정된다(사업명 라벨이 아니라 실제 파일명 사용).
+    return {
+        **summary,
+        "chunks": len(chunks),
+        "vectorstore": vs,
+        "파일명": docs[0].metadata.get("파일명"),
+    }
 
 
 # ──────────────────────────────────────────────

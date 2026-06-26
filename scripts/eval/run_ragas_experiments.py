@@ -60,9 +60,10 @@ EXPERIMENTS: List[Dict[str, Any]] = [
     )
 ]
 
-# RAGAS 채점기(조합과 무관하게 고정). 사용자 요청으로 nano 사용.
-# 주의: nano는 저렴하나 채점 안정성은 mini가 낫다(점수 신뢰도 감안).
-JUDGE_LLM_PRESET = "openai-gpt-5-nano"
+# RAGAS 채점기(조합과 무관하게 고정). 사용자 요청으로 EXAONE 사용.
+# 주의: Ollama 로컬/원격(VM) 모델이므로 OLLAMA_BASE_URL(.env) 또는 config.llm.base_url이
+# 설정돼 있어야 한다. judge로 답변 LLM과 같은 모델을 쓰면 자기편향 가능성에 유의.
+JUDGE_LLM_PRESET = "ollama-exaone3.5-7.8b"
 
 
 def _apply(base: Dict[str, Any], exp: Dict[str, Any]) -> Dict[str, Any]:

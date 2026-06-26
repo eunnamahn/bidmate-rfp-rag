@@ -103,8 +103,8 @@ OpenAI API로 동작하는 RAG 베이스라인을 먼저 완성하고, 이후 �
 ### Task 5. 검색기 (`src/retriever.py`)
 - `build_retriever(vectorstore, chunks, cfg) -> Retriever`.
 - 베이스라인: `vectorstore.as_retriever(search_kwargs={"k": k})`.
-- config의 `use_bm25`가 true면 BM25Retriever와 EnsembleRetriever로 하이브리드 구성.
-- reranker는 자리만 만들어 두고 베이스라인은 미적용.
+- config의 `use_bm25`가 true면 BM25Retriever와 EnsembleRetriever로 하이브리드 구성(가중치는 `bm25_weight`).
+- config의 `use_reranker`가 true면 CrossEncoder(`reranker_model`, 기본 bge-reranker-v2-m3)로 리랭킹: base가 `rerank_candidates`개를 뽑고 ContextualCompressionRetriever가 상위 k개로 압축. 베이스라인(둘 다 false)은 dense top-k.
 
 ### Task 6. 생성 (`src/generator.py`)
 - 프롬프트: "아래 문맥만 근거로 답하라. 문맥에 없으면 '문서에서 확인할 수 없습니다'라고 답하라." (거절 유도 — 평가의 거절 정확도와 직결되므로 반드시 포함)

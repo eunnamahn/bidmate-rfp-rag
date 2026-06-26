@@ -148,6 +148,25 @@ def custom_metrics(records: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
     }
 
 
+def _set_judge_temperature(judge_llm) -> None:
+    """judge LLM의 채점 온도를 모델 제약에 맞춰 설정한다.
+
+    GPT-5 계열은 temperature=1만 허용하므로 1로 둔다(RAGAS의 온도 덮어쓰기는
+    bypass_temperature=True로 막는다). 그 외 모델(EXAONE 등 Ollama 포함)은
+    채점 결정성을 위해 0으로 둔다.
+    """
+    model = str(
+        getattr(judge_llm, "model_name", None)
+        or getattr(judge_llm, "model", "")
+        or ""
+    )
+    temp = 1 if "gpt-5" in model.lower() else 0
+    try:
+        judge_llm.temperature = temp
+    except Exception:
+        pass
+
+
 def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb,
                   metric_names: Optional[List[str]] = None) -> Dict[str, Any]:
     """answerable 항목에 대해 RAGAS 지표를 고정 judge로 채점한다.
@@ -179,13 +198,9 @@ def ragas_metrics(records: List[Dict[str, Any]], judge_llm, judge_emb,
         "reference": r["ground_truth"] or "",
     } for r in items]
 
-    # GPT-5 계열 judge는 temperature=1만 허용한다. RAGAS는 기본적으로 채점 호출에
-    # temperature=0.01을 강제하므로, judge 온도를 1로 두고 bypass_temperature=True로
-    # RAGAS의 온도 덮어쓰기를 막는다(이 모델 제약을 우회).
-    try:
-        judge_llm.temperature = 1
-    except Exception:
-        pass
+    # 채점 온도를 모델에 맞춰 설정한다(GPT-5는 1, EXAONE 등은 0). RAGAS는 채점 호출에
+    # temperature=0.01을 강제하므로 bypass_temperature=True로 덮어쓰기를 막는다.
+    _set_judge_temperature(judge_llm)
 
     # answer_relevancy는 사실추출 단답을 구조적으로 저평가해 제외한다(정답일수록 손해).
     metrics = [_ALL[n] for n in names if n in _ALL]
@@ -215,11 +230,8 @@ def judge_descriptive(records: List[Dict[str, Any]], judge_llm) -> Optional[floa
     items = [r for r in records if not r["unanswerable"]]
     if not items:
         return None
-    # GPT-5 계열 judge는 temperature=1만 허용 -> invoke 전 보정(ragas_metrics와 동일).
-    try:
-        judge_llm.temperature = 1
-    except Exception:
-        pass
+    # 채점 온도를 모델에 맞춰 보정한다(ragas_metrics와 동일: GPT-5는 1, 그 외는 0).
+    _set_judge_temperature(judge_llm)
     scores: List[float] = []
     for r in items:
         prompt = (

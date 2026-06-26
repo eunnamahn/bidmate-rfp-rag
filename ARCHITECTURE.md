@@ -136,6 +136,34 @@ LLM이 채운다. 도구 호출을 지원하지 않는 LLM(일부 Ollama)은 키
 > 그 자체로는 자율 에이전트가 아니라 **도구**다. 자율적 의사결정(어떤 도구를 쓸지)은
 > 수퍼바이저 에이전트가 담당한다. 라우팅은 도구 호출 1회(전체 ReAct 루프 아님).
 
+## 에이전트 액션 버튼 (레지스트리 + 챗 UI)
+
+챗 UI(`src/streamlit/app.py`)는 AI 답변 아래에 **에이전트 액션 버튼**을 노출한다.
+버튼 목록은 백엔드 `GET /agents`가 **레지스트리**(`src/agents/registry.py`)에서 내려준다.
+버튼을 누르면 `POST /chat`에 `agent=<id>`가 실려, LLM 자동 라우팅 대신 해당 에이전트로
+강제 분기한다(`/summarize`가 summary를 강제하는 것과 동일한 메커니즘).
+
+- 분석 대상은 **현재 활성 문서 1건**이다. 사이드바에서 고른 문서(또는 업로드/나라장터로
+  방금 인덱싱한 문서)의 `파일명`이 `/chat`의 `filename`으로 실려, `_select_retriever`가
+  그 문서로 검색을 한정한다.
+- 레지스트리 시드: 구현됨 `summary`·`metadata`(기존 graph 노드 재사용), 미구현 플레이스홀더
+  `eligibility`(적격성 판정)·`risk`(리스크 탐지)·`infographic`(인포그래픽)·`checklist`(체크리스트)·
+  `evaluation`(평가 구조). 미구현 버튼은 클릭 시 "준비 중(팀원 PR 예정)" 안내만 응답한다.
+
+### 새 에이전트 추가 방법 (팀원 가이드)
+
+에이전트 `X`를 추가하려면 세 곳만 손대면 UI 버튼·`/agents`·라우팅이 자동 연결된다.
+
+1. **본체**: `src/agents/x_agent.py`에 처리 함수 작성(검색 → LLM 생성/추출).
+   `metadata_agent.py`(단발 추출)나 `generator.generate_answer`(답변+출처) 형태를 참고.
+2. **노드**: `src/graph.py`에 노드 `_x`와 조건 엣지 1줄(`{"x": "x"}`)을 추가하고,
+   `_x`에서 1의 본체를 호출한다(다른 노드처럼 `state["filename"]` 기반 retriever 사용).
+3. **등록**: `src/agents/registry.py`의 `X` 엔트리를 `implemented=True, intent="x"`로 갱신
+   (또는 자기 모듈에서 `registry.register(AgentSpec(...))` 호출).
+
+> 충돌 최소화: 공유 파일인 `registry.py`에서는 엔트리 1개만 만지고, 본체 로직은
+> 자기 모듈(`x_agent.py`)과 graph 노드로 분리한다.
+
 ## 나라장터 (타겟 검색 + 지연 인덱싱)
 
 전수 적재로 인덱스가 비대해지는 것을 막기 위해 **검색은 가볍게, 적재는 선택한 1건만** 한다.
