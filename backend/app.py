@@ -42,6 +42,7 @@ from src.generator import generate_infographic_data
 from src.graph import build_graph
 from src.infographic import render_infographic_html
 from src.loader import load_documents, parse_file
+from src.recommender import recommend as _recommend_bids
 from src.retriever import (
     build_meta_filtered_retriever,
     build_org_filtered_retriever,
@@ -334,6 +335,39 @@ def documents() -> Dict[str, Any]:
             }
     docs = sorted(seen.values(), key=lambda x: x["파일명"])
     return {"count": len(docs), "documents": docs}
+
+
+class CompanyProfile(BaseModel):
+    large_category: Optional[str] = None
+    mid_category: Optional[str] = None
+    small_category: Optional[str] = None
+    budget_min: Optional[int] = None
+    budget_max: Optional[int] = None
+    bid_methods: List[str] = []
+    min_score: int = 30
+    top_n: int = 20
+
+
+class RecommendRequest(BaseModel):
+    profile: CompanyProfile
+    bids: List[Dict[str, Any]]
+
+
+class RecommendResponse(BaseModel):
+    count: int
+    results: List[Dict[str, Any]]
+
+
+@app.post("/recommend", response_model=RecommendResponse)
+def recommend(req: RecommendRequest) -> RecommendResponse:
+    """회사 프로필 기반으로 공고 목록을 점수화해 추천 결과를 반환한다."""
+    results = _recommend_bids(
+        bids=req.bids,
+        profile=req.profile.dict(),
+        min_score=req.profile.min_score,
+        top_n=req.profile.top_n,
+    )
+    return RecommendResponse(count=len(results), results=results)
 
 
 def _refresh_index_state(vs, cfg: Dict[str, Any]) -> None:
