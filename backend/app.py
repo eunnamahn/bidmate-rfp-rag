@@ -27,8 +27,8 @@ from langchain_core.documents import Document
 from pydantic import BaseModel
 
 from src import catalog
-from src.agents import nara_agent
-from src.agents.metadata_agent import extract_metadata
+from src.agents import nara_agent, registry
+from src.agents.metadata_agent import append_metadata_row, extract_metadata
 from src.chunking import split_documents
 from src.config import load_config, make_embedding, make_llm
 from src.embedding import (
@@ -38,7 +38,9 @@ from src.embedding import (
     make_cache_key,
 )
 from src.evaluation.evaluate import REFUSAL_MARK
+from src.generator import generate_infographic_data
 from src.graph import build_graph
+from src.infographic import render_infographic_html
 from src.loader import load_documents, parse_file
 from src.retriever import (
     build_meta_filtered_retriever,
@@ -60,6 +62,9 @@ class ChatRequest(BaseModel):
     history: List[Tuple[str, str]] = []
     # 특정 RFP 한 건으로 한정하고 싶을 때(원클릭 요약 등) 파일명 지정.
     filename: Optional[str] = None
+    # 에이전트 액션 버튼에서 호출 시 registry의 에이전트 id(예: summary/metadata/eligibility).
+    # 지정되면 LLM 라우팅 대신 해당 에이전트로 강제 분기한다. None이면 일반 챗(자동 라우팅).
+    agent: Optional[str] = None
 
 
 class ConfigUpdate(BaseModel):
@@ -75,6 +80,7 @@ class ConfigUpdate(BaseModel):
     llm_base_url: Optional[str] = None
     retriever_k: Optional[int] = None
     retriever_use_bm25: Optional[bool] = None
+    retriever_use_reranker: Optional[bool] = None
 
 
 class Source(BaseModel):
@@ -97,12 +103,12 @@ def _rebuild(cfg: Dict[str, Any]) -> bool:
     """
     embedding = make_embedding(cfg)
     cache_key = make_cache_key(cfg)
-    use_bm25 = cfg["retriever"].get("use_bm25", False)
     have_cache = cache_exists(cfg["data"]["faiss_cache"], cache_key)
 
-    # 캐시가 없으면 빌드, BM25는 chunks가 필요하므로 파싱한다.
+    # 캐시가 없을 때만 원본을 파싱·청킹한다. BM25를 켜도 청크는 build_retriever가
+    # 벡터스토어 docstore에서 복원하므로 재파싱하지 않는다(설정 적용 지연 제거).
     chunks = None
-    if not have_cache or use_bm25:
+    if not have_cache:
         docs = load_documents(cfg)
         chunks = split_documents(docs, cfg)
 
@@ -155,6 +161,8 @@ def _apply_updates(cfg: Dict[str, Any], u: ConfigUpdate) -> Dict[str, Any]:
         cfg["retriever"]["k"] = u.retriever_k
     if u.retriever_use_bm25 is not None:
         cfg["retriever"]["use_bm25"] = u.retriever_use_bm25
+    if u.retriever_use_reranker is not None:
+        cfg["retriever"]["use_reranker"] = u.retriever_use_reranker
     return cfg
 
 
@@ -254,6 +262,16 @@ def get_config() -> Dict[str, Any]:
         "settings": _current_settings(),
         "catalog": catalog.frontend_catalog(_STATE["cfg"]),
     }
+
+
+@app.get("/agents")
+def agents() -> Dict[str, Any]:
+    """챗 UI가 액션 버튼으로 렌더할 에이전트 목록을 반환한다.
+
+    구현 여부(implemented)·회사정보 필요 여부(needs_company_info) 등을 함께 내려,
+    프론트가 버튼 활성/안내를 결정한다. (catalog.frontend_catalog와 같은 노출 패턴)
+    """
+    return {"agents": registry.as_frontend()}
 
 
 @app.post("/config")
@@ -398,6 +416,14 @@ def upload(file: UploadFile = File(...)) -> UploadResponse:
     )
     _refresh_index_state(vs, cfg)
 
+    # 메타데이터 에이전트: 추가된 문서의 메타데이터를 data_list.csv 대장에 자동 기록.
+    # (업로드 파일은 data/files에 저장돼 추후 전체 재빌드 시에도 행과 일관된다.)
+    # 기록 실패가 업로드 자체를 막지 않도록 예외는 흡수한다.
+    try:
+        append_metadata_row(cfg["data"]["csv"], name, ext.lstrip("."), meta, 텍스트=text)
+    except Exception:
+        pass
+
     return UploadResponse(
         파일명=name,
         chunks=len(chunks),
@@ -469,7 +495,8 @@ def nara_ingest(req: NaraIngestRequest) -> UploadResponse:
 
     _refresh_index_state(result["vectorstore"], cfg)
     return UploadResponse(
-        파일명=result.get("사업명") or result.get("공고번호") or "(공고)",
+        # 실제 문서 파일명(data/files 기준)을 우선 반환해 UI 활성 문서가 인덱스와 일치하게 한다.
+        파일명=result.get("파일명") or result.get("사업명") or result.get("공고번호") or "(공고)",
         chunks=result["chunks"],
         vectors=result["vectorstore"].index.ntotal,
         기관=result.get("기관"),
@@ -479,12 +506,60 @@ def nara_ingest(req: NaraIngestRequest) -> UploadResponse:
     )
 
 
+# 미구현 에이전트 버튼 클릭 시 안내(팀원 PR로 본체가 추가되면 implemented=True가 된다).
+_AGENT_PENDING = "이 기능은 준비 중입니다(팀원 PR 예정)."
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    # mode=None → 그래프가 의도(qa/summary/metadata/collect)를 분류해 라우팅한다.
+    # 에이전트 액션 버튼에서 온 요청: registry로 분기.
+    if req.agent:
+        spec = registry.get(req.agent)
+        if spec is None or not spec.implemented or not spec.intent:
+            # 미존재/미구현 에이전트 → 거절이 아닌 안내(출처 없음).
+            return ChatResponse(answer=_AGENT_PENDING, refused=False, sources=[])
+        # 구현된 에이전트는 해당 graph intent를 강제한다(/summarize가 summary를 강제하는 것과 동일).
+        return _answer(spec.intent, req.question, req.history, req.filename)
+
+    # agent 미지정 → 그래프가 의도(qa/summary/metadata/collect)를 분류해 라우팅한다.
     return _answer(None, req.question, req.history, req.filename)
 
 
 @app.post("/summarize", response_model=ChatResponse)
 def summarize(req: ChatRequest) -> ChatResponse:
     return _answer("summary", req.question, req.history, req.filename)
+
+
+class InfographicRequest(BaseModel):
+    question: str
+    filename: Optional[str] = None      # 활성 문서 한정(없으면 전체에서 검색)
+
+
+class InfographicResponse(BaseModel):
+    title: str
+    html: str                            # 인라인 렌더용 HTML 카드(빈 문자열이면 실패)
+    sources: List[Source]
+    parse_error: Optional[str] = None
+
+
+@app.post("/infographic", response_model=InfographicResponse)
+def infographic(req: InfographicRequest) -> InfographicResponse:
+    """RFP 문서에서 핵심 정보를 추출해 인포그래픽 HTML 카드를 생성한다.
+
+    챗 UI가 components.html로 인라인 렌더한다(Playwright/PNG 미사용).
+    활성 문서가 지정되면 그 문서로 한정해 추출한다(/chat과 동일한 _select_retriever).
+    """
+    if "graph" not in _STATE:
+        raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
+    retriever = _select_retriever(req.question, req.filename)
+    data, docs = generate_infographic_data(retriever, _STATE["llm"], req.question)
+    if data.get("parse_error"):
+        return InfographicResponse(
+            title=req.question, html="",
+            sources=_dedup_sources(docs), parse_error=data["parse_error"],
+        )
+    return InfographicResponse(
+        title=data.get("title") or req.question,
+        html=render_infographic_html(data),
+        sources=_dedup_sources(docs),
+    )

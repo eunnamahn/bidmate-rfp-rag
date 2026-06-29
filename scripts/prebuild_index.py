@@ -10,12 +10,18 @@ UI/실험에서 임베딩이나 청킹을 바꿀 때마다 재인덱싱을 기�
   - 그래서 빠른 임베딩부터 빌드해 먼저 쓸 수 있게 한다.
 
 사용:
-  python prebuild_index.py                       # 모든 조합
-  python prebuild_index.py --embeddings openai-3-small,hf-kure-v1
-  python prebuild_index.py --chunks recursive-1000-100
+  python scripts/prebuild_index.py                       # 모든 조합
+  python scripts/prebuild_index.py --embeddings openai-3-small,hf-kure-v1
+  python scripts/prebuild_index.py --chunks recursive-1000-100
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import argparse
 import time

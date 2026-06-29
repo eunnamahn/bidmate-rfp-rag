@@ -11,8 +11,11 @@ parser:
   pdf: pymupdf                # pymupdf(빠름/안정) | pdfplumber(표 정밀)
 
 embedding:
-  provider: openai            # openai | huggingface
+  provider: openai            # openai | huggingface | ollama
   model: text-embedding-3-small
+  # base_url:                 # provider: ollama일 때 VM 주소(예: http://34.x.x.x:11434).
+                              #   비우면 .env의 OLLAMA_BASE_URL, 그것도 없으면 로컬 11434.
+                              #   예: provider: ollama / model: bge-m3 로 VM 임베딩 사용.
 
 llm:
   provider: openai            # openai | ollama
@@ -27,8 +30,13 @@ chunk:
 
 retriever:
   k: 4
-  use_bm25: false
-  use_reranker: false
+  use_bm25: true              # BM25+dense 하이브리드. 희소(변별력) 단어를 가중해 정밀도 향상
+                              #   (캐시의 docstore에서 청크를 복원하므로 재파싱 비용 없음)
+  bm25_weight: 0.5            # 하이브리드에서 BM25 가중치(dense 가중치는 1 - 이 값)
+  use_reranker: false         # true면 CrossEncoder 리랭커로 후보를 다시 채점해 k개로 압축
+                              #   (의미 기반 오탐 제거에 가장 강력하나 최초 모델 로딩 비용 있음)
+  reranker_model: BAAI/bge-reranker-v2-m3   # sentence-transformers CrossEncoder 모델
+  rerank_candidates: 20       # 리랭킹 전 base가 뽑는 후보 수(>= k 권장)
   use_metadata_filter: true   # 질문에 기관명이 있으면 그 기관 문서로만 한정해 검색
 
 eval:

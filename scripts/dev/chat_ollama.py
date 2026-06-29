@@ -4,13 +4,19 @@
 RAG 파이프라인을 거치지 않으므로 모델 자체의 응답/속도를 빠르게 확인할 때 쓴다.
 
 사용:
-  python chat_ollama.py                         # 대화형(REPL), 기본 exaone3.5:7.8b
-  python chat_ollama.py --model qwen2.5:14b     # 모델 지정
-  python chat_ollama.py "RFP가 뭐야?"            # 일회성 질문
-  python chat_ollama.py --list                  # VM에 있는 모델 목록
+  python scripts/dev/chat_ollama.py                         # 대화형(REPL), 기본 exaone3.5:7.8b
+  python scripts/dev/chat_ollama.py --model qwen2.5:14b     # 모델 지정
+  python scripts/dev/chat_ollama.py "RFP가 뭐야?"            # 일회성 질문
+  python scripts/dev/chat_ollama.py --list                  # VM에 있는 모델 목록
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
 import os
