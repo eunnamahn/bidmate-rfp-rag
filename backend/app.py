@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import copy
+
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
@@ -30,6 +31,7 @@ from src.evaluation.evaluate import REFUSAL_MARK
 from src.generator import generate_answer
 from src.loader import load_documents
 from src.retriever import build_retriever
+from src.recommender import recommend as _recommend_bids
 
 app = FastAPI(title="입찰메이트 RFP RAG API")
 
@@ -227,6 +229,60 @@ def documents() -> Dict[str, Any]:
             }
     docs = sorted(seen.values(), key=lambda x: x["파일명"])
     return {"count": len(docs), "documents": docs}
+
+
+class CompanyProfile(BaseModel):
+    large_category: Optional[str] = None   # 대분류 (예: "용역")
+    mid_category: Optional[str] = None     # 중분류 (예: "소프트웨어")
+    small_category: Optional[str] = None   # 세분류 (예: "시스템 소프트웨어")
+    budget_min: Optional[int] = None       # 최소 희망 예산 (원)
+    budget_max: Optional[int] = None       # 최대 희망 예산 (원)
+    bid_methods: List[str] = []            # 선호 입찰방법 (예: ["전자입찰"])
+    min_score: int = 30                    # 최소 적합 점수 (0~100)
+    top_n: int = 20                        # 최대 반환 건수
+
+
+class RecommendRequest(BaseModel):
+    profile: CompanyProfile
+    bids: List[Dict[str, Any]]             # 나라장터 API에서 가져온 공고 목록
+
+
+class BidItem(BaseModel):
+    bidNtceNo: Optional[str] = None
+    bidNtceNm: Optional[str] = None
+    ntceInsttNm: Optional[str] = None
+    presmptPrce: Optional[Any] = None
+    asignBdgtAmt: Optional[Any] = None
+    bidClseDt: Optional[str] = None
+    bidMethdNm: Optional[str] = None
+    cntrctCnclsMthdNm: Optional[str] = None
+    pubPrcrmntLrgClsfcNm: Optional[str] = None
+    pubPrcrmntMidClsfcNm: Optional[str] = None
+    pubPrcrmntClsfcNm: Optional[str] = None
+    srvceDivNm: Optional[str] = None
+    bidNtceDtlUrl: Optional[str] = None
+    _score: Optional[int] = None
+
+    class Config:
+        extra = "allow"
+
+
+class RecommendResponse(BaseModel):
+    count: int
+    results: List[Dict[str, Any]]
+
+
+@app.post("/recommend", response_model=RecommendResponse)
+def recommend(req: RecommendRequest) -> RecommendResponse:
+    """회사 프로필 기반으로 공고 목록을 점수화해 추천 결과를 반환한다."""
+    profile = req.profile.dict()
+    results = _recommend_bids(
+        bids=req.bids,
+        profile=profile,
+        min_score=req.profile.min_score,
+        top_n=req.profile.top_n,
+    )
+    return RecommendResponse(count=len(results), results=results)
 
 
 @app.post("/chat", response_model=ChatResponse)
