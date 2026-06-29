@@ -24,6 +24,8 @@ import streamlit.components.v1 as components
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
+import json
+
 st.set_page_config(page_title="입찰메이트", layout="wide")
 
 
@@ -592,9 +594,95 @@ def main():
                 _send(prompt, None)
         st.rerun()
     elif clicked:
-        with st.spinner(f"‘{clicked['label']}’ 실행 중..."):
+        with st.spinner(f"’{clicked[‘label’]}’ 실행 중..."):
             _dispatch_agent(clicked)
         st.rerun()
+
+    st.divider()
+    _render_recommend_tab()
+
+
+def _render_recommend_tab():
+    """규칙 기반 공고 추천 UI."""
+    with st.expander("공고 추천 (회사 프로필 기반)", expanded=False):
+        st.caption("나라장터 공고 목록을 회사 프로필에 맞게 점수화해 추천합니다.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            large_cat = st.text_input("대분류", placeholder="예: 용역", key="rec_large")
+            mid_cat   = st.text_input("중분류", placeholder="예: 소프트웨어", key="rec_mid")
+            small_cat = st.text_input("세분류", placeholder="예: 시스템 소프트웨어", key="rec_small")
+        with col2:
+            budget_min = st.number_input("최소 예산 (원, 0=제한없음)", min_value=0, value=0, step=10_000_000, key="rec_bmin")
+            budget_max = st.number_input("최대 예산 (원, 0=제한없음)", min_value=0, value=0, step=10_000_000, key="rec_bmax")
+            bid_method_input = st.text_input("선호 입찰방법 (쉼표 구분)", placeholder="예: 전자입찰, 직찰", key="rec_method")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            min_score = st.slider("최소 적합 점수", 0, 100, 30, key="rec_minscore")
+        with col4:
+            top_n = st.number_input("최대 추천 건수", min_value=1, max_value=100, value=20, key="rec_topn")
+
+        bids_json = st.text_area(
+            "나라장터 공고 JSON",
+            height=150,
+            placeholder=’[{"bidNtceNo": "...", "bidNtceNm": "...", ...}, ...]’,
+            key="rec_json",
+        )
+
+        if st.button("추천 실행", type="primary", key="rec_run"):
+            try:
+                bids = json.loads(bids_json)
+                if isinstance(bids, dict):
+                    bids = bids.get("items") or bids.get("response", {}).get("body", {}).get("items") or []
+                if not isinstance(bids, list):
+                    st.error("공고 데이터는 JSON 배열이어야 합니다.")
+                    return
+            except json.JSONDecodeError as e:
+                st.error(f"JSON 파싱 오류: {e}")
+                return
+
+            bid_methods = [m.strip() for m in bid_method_input.split(",") if m.strip()]
+            profile = {
+                "large_category": large_cat or None,
+                "mid_category": mid_cat or None,
+                "small_category": small_cat or None,
+                "budget_min": int(budget_min) if budget_min > 0 else None,
+                "budget_max": int(budget_max) if budget_max > 0 else None,
+                "bid_methods": bid_methods,
+                "min_score": min_score,
+                "top_n": int(top_n),
+            }
+
+            with st.spinner("추천 계산 중..."):
+                data = _post("/recommend", {"profile": profile, "bids": bids}, timeout=30)
+            if data is None:
+                return
+
+            results = data.get("results", [])
+            st.success(f"총 {data.get(‘count’, 0)}건의 적합 공고를 찾았습니다.")
+            for rank, bid in enumerate(results, 1):
+                score = bid.get("_score", 0)
+                title = bid.get("bidNtceNm") or "(공고명 없음)"
+                inst  = bid.get("ntceInsttNm") or ""
+                price = bid.get("presmptPrce") or bid.get("asignBdgtAmt")
+                close = bid.get("bidClseDt") or ""
+                method = bid.get("bidMethdNm") or ""
+                url   = bid.get("bidNtceDtlUrl") or ""
+
+                with st.expander(f"#{rank}  [{score}점]  {title}"):
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.markdown(f"**기관:** {inst}")
+                        st.markdown(f"**추정가격:** {int(price):,}원" if price else "**추정가격:** 미기재")
+                        st.markdown(f"**입찰방법:** {method}")
+                    with col_b:
+                        st.markdown(f"**마감일:** {close}")
+                        st.markdown(f"**대분류:** {bid.get(‘pubPrcrmntLrgClsfcNm’,’’)}")
+                        st.markdown(f"**중분류:** {bid.get(‘pubPrcrmntMidClsfcNm’,’’)}")
+                        st.markdown(f"**세분류:** {bid.get(‘pubPrcrmntClsfcNm’,’’)}")
+                    if url:
+                        st.markdown(f"[공고 상세 보기]({url})")
 
 
 main()
