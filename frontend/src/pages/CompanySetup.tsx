@@ -1,7 +1,6 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getCompany, saveCompany, updateCompany } from '../api/company'
-import { markCompanyInfoDone } from '../api/auth'
 import { useStore } from '../store/useStore'
 import { CompanyInfo } from '../types'
 
@@ -25,7 +24,6 @@ const EMPTY: CompanyInfo = {
 
 export default function CompanySetup() {
   const navigate = useNavigate()
-  const user = useStore((s) => s.user)
   const setHasCompanyInfo = useStore((s) => s.setHasCompanyInfo)
   const [form, setForm] = useState<CompanyInfo>(EMPTY)
   const [isEdit, setIsEdit] = useState(false)
@@ -54,7 +52,6 @@ export default function CompanySetup() {
     setLoading(true)
     try {
       if (isEdit) { await updateCompany(form) } else { await saveCompany(form) }
-      if (user?.email) await markCompanyInfoDone(user.email)
       setHasCompanyInfo(true)
       navigate('/')
     } catch {
