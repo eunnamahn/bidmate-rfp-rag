@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Turn, ChatResponse, InfographicResponse, Source } from '../types'
@@ -48,7 +48,9 @@ function SourcesPanel({ sources }: { sources: Source[] }) {
   )
 }
 
-function AnswerContent({ data }: { data: ChatResponse }) {
+// memo로 감싸 새 메시지 추가 시 ActionBar prop 변경으로 인한 부모 리렌더가
+// AnswerContent까지 전파되지 않게 한다. data가 동일 참조라면 MermaidDiagram도 리렌더되지 않는다.
+const AnswerContent = memo(function AnswerContent({ data }: { data: ChatResponse }) {
   const answer = data.answer || ''
   const m = MERMAID_RE.exec(answer)
   if (m) {
@@ -70,9 +72,12 @@ function AnswerContent({ data }: { data: ChatResponse }) {
       <SourcesPanel sources={data.sources || []} />
     </>
   )
-}
+})
 
-function InfographicContent({ data }: { data: InfographicResponse }) {
+// memo로 감싸 부모 리렌더(새 메시지 추가 등) 시 srcDoc prop이 재평가되지 않게 한다.
+// srcDoc이 변경되면 iframe이 재로드되어 크기가 초기화되므로, 동일한 turn.data를 받는 한
+// 컴포넌트 자체를 렌더링하지 않아 iframe을 그대로 유지한다.
+const InfographicContent = memo(function InfographicContent({ data }: { data: InfographicResponse }) {
   if (data.parse_error) {
     return (
       <div>
@@ -85,19 +90,21 @@ function InfographicContent({ data }: { data: InfographicResponse }) {
   if (data.html) {
     return (
       <>
-        <iframe
-          srcDoc={data.html}
-          className="w-full rounded-lg border border-gray-100"
-          style={{ height: 760 }}
-          sandbox="allow-scripts"
-          title="인포그래픽"
-        />
+        <div style={{ height: '760px', minHeight: '760px', width: '100%', flexShrink: 0, overflow: 'hidden' }}>
+          <iframe
+            srcDoc={data.html}
+            className="rounded-lg border border-gray-100"
+            style={{ height: '760px', minHeight: '760px', width: '100%', display: 'block', flexShrink: 0 }}
+            sandbox="allow-scripts"
+            title="인포그래픽"
+          />
+        </div>
         <SourcesPanel sources={data.sources || []} />
       </>
     )
   }
   return <p className="text-sm text-gray-500">인포그래픽을 생성하지 못했습니다.</p>
-}
+})
 
 interface Props {
   turn: Turn

@@ -16,6 +16,7 @@ export default function RecommendCards() {
   const setDocuments = useStore((s) => s.setDocuments)
   const setActiveFilename = useStore((s) => s.setActiveFilename)
   const [ingesting, setIngesting] = useState<string | null>(null)
+  const [ingestError, setIngestError] = useState<string | null>(null)
 
   const ready = !!user && hasCompanyInfo()
 
@@ -28,14 +29,16 @@ export default function RecommendCards() {
   })
 
   async function handleIngest(card: typeof cards[0]) {
+    if (ingesting === card.id) return
     setIngesting(card.id)
+    setIngestError(null)
     try {
-      const data = await naraIngest(card.item)
+      const result = await naraIngest(card.item)
       const docs = await fetchDocuments()
       setDocuments(docs)
-      setActiveFilename(data.파일명)
+      setActiveFilename(result.파일명)
     } catch {
-      // silent
+      setIngestError('첨부파일을 가져올 수 없습니다. 다른 공고를 선택해주세요.')
     } finally {
       setIngesting(null)
     }
@@ -97,25 +100,38 @@ export default function RecommendCards() {
   return (
     <div className="space-y-2">
       <p className="text-xs text-gray-400 mb-2">나라장터 최근 공고 · 회사 프로필 매칭 Top 3</p>
+      {ingestError && (
+        <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{ingestError}</p>
+      )}
       {cards.map((card) => (
         <div
           key={card.id}
-          className="bg-white border border-gray-100 rounded-lg p-3 hover:border-primary-300 transition-colors cursor-pointer group"
+          className={`bg-white border rounded-lg p-3 transition-colors group cursor-pointer ${
+            ingesting === card.id
+              ? 'border-primary-300 bg-primary-50/30'
+              : 'border-gray-100 hover:border-primary-300'
+          }`}
           onClick={() => handleIngest(card)}
         >
           <div className="flex items-start justify-between gap-2 mb-1.5">
             <p className="text-xs font-medium text-gray-800 leading-snug flex-1 group-hover:text-primary-700">
               {card.title}
             </p>
-            <span className="flex-shrink-0 text-xs font-bold text-primary-600 bg-primary-50 px-1.5 py-0.5 rounded">
-              {card.matchScore}%
-            </span>
+            {ingesting === card.id ? (
+              <svg className="flex-shrink-0 w-4 h-4 text-primary-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <span className="flex-shrink-0 text-xs font-bold text-primary-600 bg-primary-50 px-1.5 py-0.5 rounded">
+                {card.matchScore}%
+              </span>
+            )}
           </div>
           <p className="text-xs text-gray-400">{card.organization} · ~{card.deadline}</p>
-          <p className="text-xs text-gray-500 mt-1 leading-relaxed">{card.reason}</p>
-          {ingesting === card.id && (
-            <p className="text-xs text-primary-600 mt-1.5 font-medium">인덱싱 중...</p>
-          )}
+          <p className={`text-xs mt-1 leading-relaxed ${ingesting === card.id ? 'text-primary-600 font-medium' : 'text-gray-500'}`}>
+            {ingesting === card.id ? '문서 인덱싱 중...' : card.reason}
+          </p>
         </div>
       ))}
     </div>

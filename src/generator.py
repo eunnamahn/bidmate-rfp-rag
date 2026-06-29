@@ -530,6 +530,33 @@ def _parse_json_block(raw: str) -> Optional[Dict]:
         return None
 
 
+# 평가배점 텍스트 패턴
+# 기존 문자 클래스 방식([능력평가점수]*)은 "기술제안서", "기술평가항목" 등을 못 잡아냄.
+# \S* 로 키워드 뒤 접미어를, [^\d\n]{0,20} 으로 ": " 또는 " 배점 " 같은 구분자를 허용.
+# 점/% 접미어를 필수로 요구해 단순 숫자 언급과 구분한다.
+_EVAL_SCORE_RE = re.compile(
+    r'(기술|가격|제안|수행|발표|창의)'
+    r'\S*'               # 제안서, 평가항목, 제안평가 등 임의 접미어
+    r'(?:[^\d\n]{0,20})' # 콜론·공백·레이블 등 구분자 (최대 20자, 줄넘김 금지)
+    r'(\d{1,3})\s*(?:점|%)',
+)
+_EVAL_LABEL_MAP = {"기술": "기술평가", "가격": "가격평가", "제안": "제안평가", "수행": "수행능력평가"}
+
+
+def _fallback_eval_scores(text: str) -> List[Dict]:
+    """LLM 추출 실패 시 RFP 텍스트에서 직접 배점을 추출한다."""
+    found: Dict[str, int] = {}
+    for m in _EVAL_SCORE_RE.finditer(text):
+        raw_name, score = m.group(1), int(m.group(2))
+        if not (1 <= score <= 100):   # 비율 범위 밖은 무시
+            continue
+        # 대표 레이블로 정규화
+        key = next((v for k, v in _EVAL_LABEL_MAP.items() if k in raw_name), raw_name)
+        if key not in found:
+            found[key] = score
+    return [{"name": k, "score": v, "max_score": 100} for k, v in found.items()]
+
+
 def generate_infographic_data(
     retriever,
     llm,
@@ -540,13 +567,25 @@ def generate_infographic_data(
     Returns:
         (info_dict, source_docs). 파싱 실패 시 info_dict={"parse_error": 원본}.
     """
-    docs = retriever.invoke(question)
+    # 평가배점 관련 청크가 검색되도록 키워드를 쿼리에 추가
+    eval_query = f"{question} 평가배점 기술평가 가격평가 평가기준"
+    docs = retriever.invoke(eval_query)
     context = _format_docs(docs)
     chain = _INFOGRAPHIC_PROMPT | llm | StrOutputParser()
     raw = chain.invoke({"context": context})
     result = _parse_json_block(raw)
     if result is None:
         result = {"parse_error": raw}
+        return result, docs
+
+    # LLM이 배점을 모두 0 또는 null로 반환한 경우 텍스트 직접 파싱으로 보완
+    scores = result.get("evaluation_scores") or []
+    all_zero = not scores or all(not (s.get("score") or 0) for s in scores)
+    if all_zero:
+        fallback = _fallback_eval_scores(context)
+        if fallback:
+            result["evaluation_scores"] = fallback
+
     return result, docs
 
 
