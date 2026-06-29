@@ -1,8 +1,15 @@
 # 환경 변수 (API 키 포함)
 .env
 
+# macOS
+.DS_Store
+
+# 로컬 작업 전용 폴더
+중급프로젝트/
+
 # 저장된 벡터스토어 캐시
 data/faiss_rfp/
+중급프로젝트/data/faiss_rfp/
 
 # 나라장터 수집 산출물 (nara_agent)
 data/nara_downloads/
@@ -11,14 +18,24 @@ data/nara_seen.json
 # 원본 데이터/메타데이터 (저장소는 코드만, 데이터는 직접 배치)
 data/files/
 data/data_list.csv
+중급프로젝트/data/files/
+중급프로젝트/data/data_list.csv
+
+# bkit 캐시 (자동 생성)
+.bkit/
+중급프로젝트/.bkit/
 
 # 파이썬 캐시
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
 # 가상환경
 .venv/
 venv/
+env/
 
 # 실행 산출물/임시 로그
 *.out
