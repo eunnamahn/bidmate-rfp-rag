@@ -1,6 +1,11 @@
 """FastAPI 백엔드 서버.
 
 엔드포인트:
+  POST /auth/register  회원가입 (이메일/비밀번호) → JWT 토큰
+  POST /auth/login     로그인 → JWT 토큰
+  GET  /company        회사 정보 조회 (인증 필요)
+  POST /company        회사 정보 저장 (인증 필요)
+  PUT  /company        회사 정보 수정 (인증 필요)
   GET  /health      서버/인덱스 상태
   GET  /config      현재 설정 + 선택 가능한 옵션
   POST /config      설정 변경 적용(필요 시 재인덱싱, 설정별 FAISS 캐시)
@@ -17,11 +22,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import secrets
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from langchain_core.documents import Document
 from pydantic import BaseModel
@@ -53,8 +61,26 @@ from src.retriever import (
 
 app = FastAPI(title="입찰메이트 RFP RAG API")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # 서버 기동 시 1회 조립되고 /config로 갱신되는 전역 상태
 _STATE: Dict[str, Any] = {}
+
+# ─── 인메모리 인증·회사 저장소 ────────────────────────────────────────────────
+# 이메일 → { id, salt, hashed_password }
+_USERS: Dict[str, Dict[str, Any]] = {}
+# 토큰 → 이메일  (로그아웃 시 삭제로 무효화 가능)
+_TOKENS: Dict[str, str] = {}
+# 이메일 → 회사 정보 dict
+_COMPANIES: Dict[str, Dict[str, Any]] = {}
 
 
 class ChatRequest(BaseModel):
@@ -66,6 +92,9 @@ class ChatRequest(BaseModel):
     # 에이전트 액션 버튼에서 호출 시 registry의 에이전트 id(예: summary/metadata/eligibility).
     # 지정되면 LLM 라우팅 대신 해당 에이전트로 강제 분기한다. None이면 일반 챗(자동 라우팅).
     agent: Optional[str] = None
+    # 프론트엔드가 전달하는 회사 정보(needs_company_info=True 에이전트 전용).
+    # 이 필드가 있으면 eligibility 노드가 히스토리 LLM 추출 없이 직접 판정에 사용한다.
+    company_info: Optional[Dict[str, Any]] = None
 
 
 class ConfigUpdate(BaseModel):
@@ -186,6 +215,118 @@ def _startup() -> None:
     _rebuild(cfg)
 
 
+# ─── 인증 헬퍼 ────────────────────────────────────────────────────────────────
+
+def _hash_pw(password: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+
+
+def _auth_user(authorization: Optional[str] = Header(default=None)) -> str:
+    """Authorization: Bearer <token> 헤더에서 이메일을 꺼낸다."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+    token = authorization[7:].strip()
+    email = _TOKENS.get(token)
+    if not email:
+        raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다.")
+    return email
+
+
+# ─── 인증 모델 ────────────────────────────────────────────────────────────────
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: Dict[str, Any]
+
+
+class CompanyInfoBody(BaseModel):
+    industry: str = ""
+    size: str = ""
+    foundingYears: int = 0
+    annualRevenue: str = ""
+    headcount: int = 0
+    certifications: List[str] = []
+    additionalInfo: str = ""
+
+
+# ─── 인증 엔드포인트 ──────────────────────────────────────────────────────────
+
+@app.post("/auth/register", response_model=AuthResponse)
+def auth_register(req: AuthRequest) -> AuthResponse:
+    """이메일/비밀번호 회원가입. 이미 등록된 이메일이면 409."""
+    if req.email in _USERS:
+        raise HTTPException(status_code=409, detail="이미 등록된 이메일입니다.")
+    salt = secrets.token_hex(16)
+    user_id = str(uuid.uuid4())
+    _USERS[req.email] = {
+        "id": user_id,
+        "salt": salt,
+        "hashed_password": _hash_pw(req.password, salt),
+    }
+    token = secrets.token_hex(32)
+    _TOKENS[token] = req.email
+    return AuthResponse(
+        token=token,
+        user={"id": user_id, "email": req.email, "hasCompanyInfo": False},
+    )
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def auth_login(req: AuthRequest) -> AuthResponse:
+    """이메일/비밀번호 로그인. 실패 시 401."""
+    user = _USERS.get(req.email)
+    if not user or user["hashed_password"] != _hash_pw(req.password, user["salt"]):
+        raise HTTPException(status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다.")
+    token = secrets.token_hex(32)
+    _TOKENS[token] = req.email
+    return AuthResponse(
+        token=token,
+        user={
+            "id": user["id"],
+            "email": req.email,
+            "hasCompanyInfo": req.email in _COMPANIES,
+        },
+    )
+
+
+# ─── 회사 정보 엔드포인트 ────────────────────────────────────────────────────
+
+@app.get("/company")
+def get_company(email: str = Depends(_auth_user)) -> Dict[str, Any]:
+    """로그인한 사용자의 회사 정보를 반환한다. 미등록이면 404."""
+    info = _COMPANIES.get(email)
+    if info is None:
+        raise HTTPException(status_code=404, detail="회사 정보가 없습니다.")
+    return info
+
+
+@app.post("/company", status_code=201)
+def create_company(
+    body: CompanyInfoBody, email: str = Depends(_auth_user)
+) -> Dict[str, Any]:
+    """회사 정보를 신규 저장한다. 이미 있으면 409."""
+    if email in _COMPANIES:
+        raise HTTPException(
+            status_code=409, detail="이미 회사 정보가 등록되어 있습니다. PUT을 사용하세요."
+        )
+    _COMPANIES[email] = body.model_dump()
+    return _COMPANIES[email]
+
+
+@app.put("/company")
+def update_company(
+    body: CompanyInfoBody, email: str = Depends(_auth_user)
+) -> Dict[str, Any]:
+    """회사 정보를 수정한다(미등록이면 신규 저장)."""
+    _COMPANIES[email] = body.model_dump()
+    return _COMPANIES[email]
+
+
 def _dedup_sources(docs) -> List[Source]:
     """검색된 청크에서 문서(파일명) 단위로 중복 제거한 출처 목록을 만든다."""
     seen = set()
@@ -226,11 +367,13 @@ def _select_retriever(question: str, filename: Optional[str] = None):
 
 def _answer(mode: Optional[str], question: str,
             history: Optional[List[Tuple[str, str]]] = None,
-            filename: Optional[str] = None) -> ChatResponse:
+            filename: Optional[str] = None,
+            company_info: Optional[Dict[str, Any]] = None) -> ChatResponse:
     """수퍼바이저 그래프를 거쳐 답변을 생성한다.
 
     mode가 주어지면 해당 intent("qa"/"summary")를 강제 주입해 분류를 생략하고,
     None이면 그래프의 classify_intent가 의도를 판정해 라우팅한다(/chat).
+    company_info가 있으면 eligibility 노드가 히스토리 추출 없이 직접 판정에 사용한다.
     """
     if "graph" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
@@ -241,6 +384,8 @@ def _answer(mode: Optional[str], question: str,
     }
     if mode is not None:
         state["intent"] = mode
+    if company_info:
+        state["company_info"] = company_info
     result = _STATE["graph"].invoke(state)
     answer = result.get("answer", "")
     return ChatResponse(
@@ -552,11 +697,11 @@ def chat(req: ChatRequest) -> ChatResponse:
         if spec is None or not spec.implemented or not spec.intent:
             # 미존재/미구현 에이전트 → 거절이 아닌 안내(출처 없음).
             return ChatResponse(answer=_AGENT_PENDING, refused=False, sources=[])
-        # 구현된 에이전트는 해당 graph intent를 강제한다(/summarize가 summary를 강제하는 것과 동일).
-        return _answer(spec.intent, req.question, req.history, req.filename)
+        # 구현된 에이전트는 해당 graph intent를 강제한다. company_info도 함께 전달.
+        return _answer(spec.intent, req.question, req.history, req.filename, req.company_info)
 
     # agent 미지정 → 그래프가 의도(qa/summary/metadata/collect)를 분류해 라우팅한다.
-    return _answer(None, req.question, req.history, req.filename)
+    return _answer(None, req.question, req.history, req.filename, req.company_info)
 
 
 @app.post("/summarize", response_model=ChatResponse)

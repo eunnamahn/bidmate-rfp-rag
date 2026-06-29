@@ -46,3 +46,7 @@ vm_model_test.json
 
 # 평가 출력물 (생성물 — 코드와 함께 버전 관리하지 않음)
 notebooklm_eval.json
+
+# Node.js
+frontend/node_modules/
+frontend/dist/

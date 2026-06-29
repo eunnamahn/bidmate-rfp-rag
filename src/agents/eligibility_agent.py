@@ -136,6 +136,79 @@ def _company_info_to_text(company_info: Dict[str, Any]) -> str:
 # ─── 공개 API ─────────────────────────────────────────────────────────────────
 
 
+def check_eligibility_with_company_info(
+    company_info: Dict[str, Any],
+    rfp_text: str,
+    cfg: Dict[str, Any],
+) -> Dict[str, Any]:
+    """이미 구조화된 회사 정보로 적격 여부를 직접 판정한다.
+
+    extract_company_info(히스토리→LLM 추출) 단계를 건너뛰므로
+    프론트에서 company_info를 전달했을 때 사용한다.
+    """
+    if not _has_enough_info(company_info):
+        return {
+            "status": "missing_info",
+            "message": _REQUEST_MESSAGE,
+            "company_info": company_info,
+        }
+
+    company_text = _company_info_to_text(company_info)
+    llm = make_llm(cfg)
+    messages = [
+        SystemMessage(content=_JUDGE_SYSTEM),
+        HumanMessage(content=_JUDGE_USER.format(
+            rfp_text=rfp_text.strip(),
+            company_info=company_text,
+        )),
+    ]
+
+    try:
+        response = llm.invoke(messages)
+        raw = response.content if hasattr(response, "content") else str(response)
+    except Exception:
+        return {
+            "status": "error",
+            "message": "판정 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+            "company_info": company_info,
+        }
+
+    data = _parse_json(raw)
+    if data is None:
+        return {
+            "status": "error",
+            "message": "판정 결과를 파싱할 수 없습니다.",
+            "company_info": company_info,
+        }
+
+    판정 = data.get("판정", "")
+    status = "eligible" if 판정 == "적격" else "ineligible"
+    사유 = data.get("사유", "")
+
+    if status == "eligible":
+        message = f"적격입니다.\n\n{사유}"
+    else:
+        미충족 = data.get("미충족_요건", [])
+        미충족_text = "\n".join(f"  - {r}" for r in 미충족) if 미충족 else "  없음"
+        message = f"부적격입니다.\n\n{사유}\n\n미충족 요건:\n{미충족_text}"
+
+    불확실 = data.get("불확실_요건", [])
+    if 불확실:
+        message += (
+            "\n\n※ 아래 항목은 제공된 회사 정보가 부족해 확인이 필요합니다:\n"
+            + "\n".join(f"  - {r}" for r in 불확실)
+        )
+
+    return {
+        "status": status,
+        "message": message,
+        "company_info": company_info,
+        "충족_요건": data.get("충족_요건", []),
+        "미충족_요건": data.get("미충족_요건", []),
+        "불확실_요건": 불확실,
+    }
+
+
 def extract_company_info(
     history: List[Union[BaseMessage, Dict[str, str]]],
     cfg: Dict[str, Any],
