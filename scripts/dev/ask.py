@@ -4,12 +4,18 @@
 벡터스토어는 캐시되므로 첫 실행만 느리고 이후엔 빠르다.
 
 사용:
-  python ask.py                  # 대화형(REPL). 빈 줄 또는 'q' 입력 시 종료
-  python ask.py "평가 배점 기준은?"   # 일회성 질문
-  python ask.py --mode summary "이 사업 요약해줘"
+  python scripts/dev/ask.py                  # 대화형(REPL). 빈 줄 또는 'q' 입력 시 종료
+  python scripts/dev/ask.py "평가 배점 기준은?"   # 일회성 질문
+  python scripts/dev/ask.py --mode summary "이 사업 요약해줘"
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
 from typing import Any, List

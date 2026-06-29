@@ -4,10 +4,16 @@ config.yaml 로드 -> build_pipeline -> evaluate -> 점수 출력.
 이 점수가 이후 모든 실험의 기준선이 된다.
 
 사용:
-  python run_baseline.py
+  python scripts/eval/run_baseline.py
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from typing import Any, Dict
 

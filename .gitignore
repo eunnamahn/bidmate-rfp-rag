@@ -44,13 +44,5 @@ env/
 pr*.diff
 vm_model_test.json
 
-# IDE
-.claude/
-중급프로젝트/.claude/
-
-# Claude 메모리
-.claude/memory/
-
-# Git 백업 (마이그레이션 용도)
-.git.backup/
-중급프로젝트/.git.backup/
+# 평가 출력물 (생성물 — 코드와 함께 버전 관리하지 않음)
+notebooklm_eval.json

@@ -8,13 +8,19 @@ RAGAS 5종 + 커스텀 4종 지표를 비교표로 출력/저장한다.
 임베딩/청킹/파서가 바뀌면 FAISS는 설정별 캐시로 분리된다(캐시 있으면 즉시 로드).
 
 사용:
-  python run_ragas_experiments.py                  # 기본 조합 전부
-  python run_ragas_experiments.py --only baseline,llm_mini
-  python run_ragas_experiments.py --limit 6        # 질문 6개만(저비용 점검)
-  python run_ragas_experiments.py --out results.json
+  python scripts/eval/run_ragas_experiments.py                  # 기본 조합 전부
+  python scripts/eval/run_ragas_experiments.py --only baseline,llm_mini
+  python scripts/eval/run_ragas_experiments.py --limit 6        # 질문 6개만(저비용 점검)
+  python scripts/eval/run_ragas_experiments.py --out results.json
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
 import copy
@@ -54,9 +60,10 @@ EXPERIMENTS: List[Dict[str, Any]] = [
     )
 ]
 
-# RAGAS 채점기(조합과 무관하게 고정). 사용자 요청으로 nano 사용.
-# 주의: nano는 저렴하나 채점 안정성은 mini가 낫다(점수 신뢰도 감안).
-JUDGE_LLM_PRESET = "openai-gpt-5-nano"
+# RAGAS 채점기(조합과 무관하게 고정). 사용자 요청으로 EXAONE 사용.
+# 주의: Ollama 로컬/원격(VM) 모델이므로 OLLAMA_BASE_URL(.env) 또는 config.llm.base_url이
+# 설정돼 있어야 한다. judge로 답변 LLM과 같은 모델을 쓰면 자기편향 가능성에 유의.
+JUDGE_LLM_PRESET = "ollama-exaone3.5-7.8b"
 
 
 def _apply(base: Dict[str, Any], exp: Dict[str, Any]) -> Dict[str, Any]:

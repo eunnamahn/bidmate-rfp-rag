@@ -37,7 +37,9 @@ def make_embedding(cfg: Dict[str, Any]):
     """config의 embedding.provider에 따라 임베딩 객체를 생성한다.
 
     openai      -> OpenAIEmbeddings
-    huggingface -> HuggingFaceEmbeddings (예: nlpai-lab/KURE-v1, BAAI/bge-m3)
+    huggingface -> HuggingFaceEmbeddings (로컬 in-process, 예: nlpai-lab/KURE-v1, BAAI/bge-m3)
+    ollama      -> OllamaEmbeddings (원격/로컬 Ollama 서버, 예: bge-m3). LLM과 동일하게
+                   base_url(config) 또는 OLLAMA_BASE_URL(.env)로 VM 주소를 지정한다.
     """
     emb = cfg["embedding"]
     provider = emb["provider"]
@@ -46,6 +48,16 @@ def make_embedding(cfg: Dict[str, Any]):
         from langchain_openai import OpenAIEmbeddings
 
         return OpenAIEmbeddings(model=emb["model"])
+    if provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
+        # make_llm과 동일한 규칙: config.embedding.base_url 우선, 없으면 .env의 OLLAMA_BASE_URL,
+        # 둘 다 없으면 로컬(11434). 같은 VM의 Ollama가 LLM과 임베딩을 함께 서빙할 수 있다.
+        base_url = emb.get("base_url") or os.getenv("OLLAMA_BASE_URL")
+        kwargs = {"model": emb["model"]}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return OllamaEmbeddings(**kwargs)
     if provider == "huggingface":
         from langchain_huggingface import HuggingFaceEmbeddings
 

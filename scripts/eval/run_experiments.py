@@ -8,12 +8,18 @@ config 교체 축(파서/청킹/임베딩/LLM/검색)을 한 축씩 바꿔가며
 임베딩/청킹이 바뀌면 FAISS는 설정별 캐시로 분리되어 재인덱싱은 처음 1회만 든다.
 
 사용:
-  python run_experiments.py                 # 아래 EXPERIMENTS 전부 실행
-  python run_experiments.py --judge         # 서술형(judge_llm) 채점 포함
-  python run_experiments.py --only baseline,chunk_1000   # 일부만
+  python scripts/eval/run_experiments.py                 # 아래 EXPERIMENTS 전부 실행
+  python scripts/eval/run_experiments.py --judge         # 서술형(judge_llm) 채점 포함
+  python scripts/eval/run_experiments.py --only baseline,chunk_1000   # 일부만
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# 저장소 루트를 import 경로에 추가한다(scripts 하위에서 from src... 동작).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import argparse
 import copy
