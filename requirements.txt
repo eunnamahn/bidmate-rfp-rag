@@ -5,6 +5,7 @@ langchain-core
 langchain-community
 langchain-openai
 langchain-text-splitters
+langgraph
 faiss-cpu
 pandas
 pyyaml
@@ -13,6 +14,7 @@ rank-bm25
 # 백엔드(FastAPI) + 프론트(Streamlit) 구동
 fastapi
 uvicorn[standard]
+python-multipart            # FastAPI 파일 업로드(/upload)에 필요
 streamlit
 requests
 # 파서(기본): 대형/복잡 문서에도 안정적이고 빠름

@@ -143,21 +143,46 @@ def _section_split(docs: List[Document], cfg: Dict[str, Any]) -> List[Document]:
                     metadata={**doc.metadata, "section": "서두"},
                 ))
 
-        # 섹션별 처리
+        # 섹션별 처리 — 200자 미만이면 다음 섹션과 병합
+        MIN_SECTION_LEN = 200
+        merged_sections = []
+        buffer_text = ""
+        buffer_name = ""
+
         for idx, (start, name) in enumerate(boundaries):
             end = boundaries[idx + 1][0] if idx + 1 < len(boundaries) else len(text)
             section_text = text[start:end].strip()
             if not section_text:
                 continue
 
+            if buffer_text:
+                buffer_text += "\n" + section_text
+            else:
+                buffer_text = section_text
+                buffer_name = name
+
+            if len(buffer_text) >= MIN_SECTION_LEN:
+                merged_sections.append((buffer_text, buffer_name))
+                buffer_text = ""
+                buffer_name = ""
+
+        # 마지막 버퍼에 남은 것 처리
+        if buffer_text:
+            if merged_sections:
+                # 앞 섹션에 붙이기
+                prev_text, prev_name = merged_sections[-1]
+                merged_sections[-1] = (prev_text + "\n" + buffer_text, prev_name)
+            else:
+                merged_sections.append((buffer_text, buffer_name))
+
+        # 병합된 섹션 청킹
+        for section_text, name in merged_sections:
             if len(section_text) <= chunk_size:
-                # 섹션이 충분히 짧으면 하나의 청크로
                 out.append(Document(
                     page_content=f"{header}\n{section_text}",
                     metadata={**doc.metadata, "section": name},
                 ))
             else:
-                # 섹션이 너무 길면 추가로 쪼갬
                 tmp = Document(page_content=section_text, metadata=doc.metadata)
                 for piece in fallback.split_documents([tmp]):
                     piece.page_content = f"{header}\n{piece.page_content}"

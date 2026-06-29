@@ -5,7 +5,7 @@
     어떤 파싱/청킹 조합이 가장 좋은 청크를 만드는지 비교한다.
     RAGAS 점수 나오면 이 결과와 함께 최적 조합을 선정한다.
 
-실험 항목 (총 32가지):
+실험 항목 (총 48가지):
     [HWP 파서]   pyhwp / hwp-hwpx-parser / olefile  (3가지)
     [PDF 파서]   pymupdf / pdfplumber                (2가지)
     [청킹 전략]  recursive / section                 (2가지)
@@ -27,7 +27,7 @@
     !pip install pymupdf pyhwp langchain-text-splitters pdfplumber hwp-hwpx-parser olefile -q
 
 셀 3) 이 파일 실행
-    exec(open('/content/drive/MyDrive/codeit_mission/experiments/chunking_experiment.py').read())
+    exec(open('/content/drive/MyDrive/codeit_mission/중급프로젝트/experiments/chunking_experiment.py').read())
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -39,9 +39,9 @@ import matplotlib.pyplot as plt
 
 # ── 경로 설정 ────────────────────────────────────────
 # ⚠️ 본인 드라이브 경로 다르면 여기만 수정
-BASE      = '/content/drive/MyDrive/codeit_mission'
-CSV_PATH  = f"{BASE}/원본 데이터/data_list.csv"
-FILES_DIR = f"{BASE}/원본 데이터/files"
+BASE      = '/content/drive/MyDrive/codeit_mission/중급프로젝트'
+CSV_PATH  = '/content/drive/MyDrive/codeit_mission/원본 데이터/data_list.csv'
+FILES_DIR = '/content/drive/MyDrive/codeit_mission/원본 데이터/files'
 
 if BASE not in sys.path:
     sys.path.insert(0, BASE)

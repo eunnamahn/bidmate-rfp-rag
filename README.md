@@ -64,16 +64,18 @@ OPENAI_API_KEY=sk-...
 │   ├── retriever.py         # 검색기 (dense / hybrid / rerank)
 │   ├── generator.py         # 프롬프트 + LLM 체인
 │   ├── pipeline.py          # 전체 조립
+│   ├── graph.py             # LangGraph 도구 호출 수퍼바이저 에이전트
+│   ├── agents/              # 도구: metadata_agent · nara_agent
 │   ├── streamlit/
 │   │   └── app.py           # Streamlit UI (백엔드 API만 호출)
-│   └── evaluation/          # 골든셋 채점
-│       ├── evaluate.py
-│       ├── golden_set.json
-│       └── build_golden.py
+│   └── evaluation/          # 골든셋 채점 (ragas_eval, golden_set, ...)
 ├── backend/
-│   └── app.py               # FastAPI 서버 (/health /documents /chat /summarize)
+│   └── app.py               # FastAPI 서버 (/chat /summarize /upload /nara/*)
 ├── main.py                  # 인덱싱 엔트리포인트 (FAISS 저장)
-├── run_baseline.py          # 베이스라인 실행 + 채점
+├── scripts/                 # CLI 스크립트
+│   ├── eval/                # 평가 러너 (run_baseline·run_experiments·run_ragas_experiments·eval_notebooklm)
+│   ├── dev/                 # 수동 테스트 (ask·chat_ollama)
+│   └── prebuild_index.py    # 인덱스 워밍업 (+ build_* 그리드)
 └── run.sh                   # 백엔드 + 프론트 동시 실행
 ```
 
@@ -90,10 +92,23 @@ python main.py
 ### 2) 베이스라인 평가
 
 ```
-python run_baseline.py
+python scripts/eval/run_baseline.py
 ```
 
 검색(Hit@k, MRR), 메타추출 정확도, 거절 정확도를 출력한다.
+
+### 2-1) 실험 비교 (교체 축 한 바퀴)
+
+```
+python scripts/eval/run_experiments.py            # 정의된 실험 전부
+python scripts/eval/run_experiments.py --judge    # 서술형(judge_llm) 채점 포함
+python scripts/eval/run_experiments.py --only baseline,chunk_1000
+```
+
+파서/청킹/임베딩/LLM/검색을 한 축씩 바꿔 같은 골든셋으로 채점하고 비교표를 출력한다.
+같은 파서를 쓰는 실험은 원본 파싱을 1회만 수행해 재사용한다. 이 표가 보고서의
+모델 선택 근거가 된다. (로컬 임베딩 KURE/bge 실험은 langchain-huggingface +
+sentence-transformers 설치 필요.)
 
 ### 3) 풀스택 실행 (백엔드 + UI)
 
@@ -113,13 +128,13 @@ FastAPI(기본 8000)와 Streamlit(기본 8501)을 함께 띄운다. 브라우저
 이 저장소에는 코드만 있고 데이터는 포함되어 있지 않다. 실행하려면:
 
 1. `data/data_list.csv` (100건, 12컬럼)와 `data/files/`의 원본 HWP/PDF를 배치한다.
-2. 골든셋을 실제 데이터에 맞게 생성한다:
+2. 골든셋을 실제 데이터에 맞게 생성한다(컨설턴트 4대 정보축 기준):
    ```
-   python -m src.evaluation.build_golden --n 20
+   python -m src.evaluation.build_golden --n 12 --body-n 6
    ```
-   metadata_extraction(금액/마감일)과 unanswerable은 자동 생성된다.
-   `body_grounded`(서술형, 평가배점 등) 항목의 `answer`는 본문을 보고 직접 채워 넣고,
-   채점하려면 `evaluate(..., judge_llm=...)`로 judge 모델을 넘긴다.
+   - metadata_extraction(대상 기관/예산/마감일)과 unanswerable은 자동 생성·자동 채점된다.
+   - body_grounded(핵심 요구조건/제출 방식/평가 배점)는 본문을 보고 `answer`를 직접
+     채워 넣고, 채점하려면 `evaluate(..., judge_llm=...)`로 judge 모델을 넘긴다.
 
 ## 프론트엔드에서 모델/임베딩/청킹 전환
 
