@@ -52,6 +52,16 @@ from src.retriever import (
 
 app = FastAPI(title="입찰메이트 RFP RAG API")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # 서버 기동 시 1회 조립되고 /config로 갱신되는 전역 상태
 _STATE: Dict[str, Any] = {}
 
@@ -65,6 +75,9 @@ class ChatRequest(BaseModel):
     # 에이전트 액션 버튼에서 호출 시 registry의 에이전트 id(예: summary/metadata/eligibility).
     # 지정되면 LLM 라우팅 대신 해당 에이전트로 강제 분기한다. None이면 일반 챗(자동 라우팅).
     agent: Optional[str] = None
+    # 프론트엔드가 전달하는 회사 정보(needs_company_info=True 에이전트 전용).
+    # 이 필드가 있으면 eligibility 노드가 히스토리 LLM 추출 없이 직접 판정에 사용한다.
+    company_info: Optional[Dict[str, Any]] = None
 
 
 class ConfigUpdate(BaseModel):
@@ -225,11 +238,13 @@ def _select_retriever(question: str, filename: Optional[str] = None):
 
 def _answer(mode: Optional[str], question: str,
             history: Optional[List[Tuple[str, str]]] = None,
-            filename: Optional[str] = None) -> ChatResponse:
+            filename: Optional[str] = None,
+            company_info: Optional[Dict[str, Any]] = None) -> ChatResponse:
     """수퍼바이저 그래프를 거쳐 답변을 생성한다.
 
     mode가 주어지면 해당 intent("qa"/"summary")를 강제 주입해 분류를 생략하고,
     None이면 그래프의 classify_intent가 의도를 판정해 라우팅한다(/chat).
+    company_info가 있으면 eligibility 노드가 히스토리 추출 없이 직접 판정에 사용한다.
     """
     if "graph" not in _STATE:
         raise HTTPException(status_code=503, detail="인덱스가 준비되지 않았습니다.")
@@ -240,6 +255,8 @@ def _answer(mode: Optional[str], question: str,
     }
     if mode is not None:
         state["intent"] = mode
+    if company_info:
+        state["company_info"] = company_info
     result = _STATE["graph"].invoke(state)
     answer = result.get("answer", "")
     return ChatResponse(
@@ -518,11 +535,11 @@ def chat(req: ChatRequest) -> ChatResponse:
         if spec is None or not spec.implemented or not spec.intent:
             # 미존재/미구현 에이전트 → 거절이 아닌 안내(출처 없음).
             return ChatResponse(answer=_AGENT_PENDING, refused=False, sources=[])
-        # 구현된 에이전트는 해당 graph intent를 강제한다(/summarize가 summary를 강제하는 것과 동일).
-        return _answer(spec.intent, req.question, req.history, req.filename)
+        # 구현된 에이전트는 해당 graph intent를 강제한다. company_info도 함께 전달.
+        return _answer(spec.intent, req.question, req.history, req.filename, req.company_info)
 
     # agent 미지정 → 그래프가 의도(qa/summary/metadata/collect)를 분류해 라우팅한다.
-    return _answer(None, req.question, req.history, req.filename)
+    return _answer(None, req.question, req.history, req.filename, req.company_info)
 
 
 @app.post("/summarize", response_model=ChatResponse)

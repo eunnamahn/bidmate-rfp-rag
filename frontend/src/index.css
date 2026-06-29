@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-white text-gray-900 antialiased;
+    font-family: 'Pretendard', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-primary-600 hover:bg-primary-700 text-white font-medium px-4 py-2 rounded-lg transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-white hover:bg-gray-50 text-gray-700 border border-gray-200 font-medium px-4 py-2 rounded-lg transition-colors duration-150;
+  }
+
+  .input-field {
+    @apply w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary-600/30 focus:border-primary-600 transition-all placeholder-gray-400;
+  }
+
+  .card {
+    @apply bg-white rounded-xl border border-gray-100 shadow-sm;
+  }
+}
+
+/* 스크롤바 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* 채팅 마크다운 */
+.prose-chat p { margin-bottom: 0.5rem; }
+.prose-chat ul { list-style: disc; padding-left: 1.25rem; margin-bottom: 0.5rem; }
+.prose-chat ol { list-style: decimal; padding-left: 1.25rem; margin-bottom: 0.5rem; }
+.prose-chat li { margin-bottom: 0.2rem; }
+.prose-chat strong { font-weight: 600; }
+.prose-chat code {
+  background: #f3f4f6;
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.85em;
+  font-family: 'Fira Code', monospace;
+}
+.prose-chat pre code {
+  background: transparent;
+  padding: 0;
+}
+.prose-chat pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+.prose-chat h1, .prose-chat h2, .prose-chat h3 {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  margin-top: 0.75rem;
+}
+.prose-chat table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  margin-bottom: 0.75rem;
+}
+.prose-chat th, .prose-chat td {
+  border: 1px solid #e5e7eb;
+  padding: 0.4rem 0.75rem;
+  text-align: left;
+}
+.prose-chat th {
+  background: #f9fafb;
+  font-weight: 600;
+}
+.prose-chat blockquote {
+  border-left: 3px solid #1A6BC4;
+  padding-left: 0.75rem;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}

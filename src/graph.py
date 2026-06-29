@@ -28,7 +28,7 @@ from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 
-from src.agents.eligibility_agent import check_eligibility
+from src.agents.eligibility_agent import check_eligibility, check_eligibility_with_company_info
 from src.agents.nara_agent import notice_summary, search_notices
 from src.agents.risk_agent import detect_risks
 from src.generator import generate_answer, generate_checklist, generate_diagram
@@ -56,6 +56,7 @@ class GraphState(TypedDict, total=False):
     answer: str
     sources: List[Document]
     metadata: Optional[Dict[str, Any]]
+    company_info: Optional[Dict[str, Any]]  # 프론트에서 전달한 회사 정보(적격성 판정용)
 
 
 # ══════════════════════════════════════════════════════
@@ -215,6 +216,33 @@ def _format_checklist(data: Dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _frontend_to_backend_company(info: Dict[str, Any]) -> Dict[str, Any]:
+    """프론트엔드 CompanyInfo → 백엔드 eligibility_agent 판정 포맷 변환.
+
+    프론트 필드명(영문)을 백엔드 필드명(한글)으로 매핑하고,
+    문자열 매출액("30억", "5억 미만" 등)을 원 단위 정수로 변환한다.
+    """
+    revenue_str = str(info.get("annualRevenue") or "")
+    매출액: Optional[int] = None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*억", revenue_str)
+    if m:
+        매출액 = int(float(m.group(1)) * 1_0000_0000)
+    else:
+        m2 = re.search(r"(\d+)", revenue_str)
+        if m2:
+            매출액 = int(m2.group(1))
+
+    certs = info.get("certifications")
+    return {
+        "업종": info.get("industry") or None,
+        "규모": info.get("size") or None,
+        "창업연수": int(info["foundingYears"]) if info.get("foundingYears") else None,
+        "매출액": 매출액,
+        "직원수": int(info["headcount"]) if info.get("headcount") else None,
+        "인증": certs if isinstance(certs, list) and certs else None,
+    }
+
+
 def _user_messages(history: List[Tuple[str, str]]) -> List[Dict[str, str]]:
     """히스토리에서 사용자 발화만 role/content dict로 추린다.
 
@@ -303,13 +331,21 @@ def build_graph(cfg: Dict[str, Any], llm, retriever_fn: RetrieverFn):
     # 모두 활성 문서(filename)로 한정 검색해 그 문서 1건을 분석한다.
 
     def _eligibility(state: GraphState) -> GraphState:
-        # 활성 문서에서 참가자격 관련 본문을 모아 회사 정보(히스토리)와 대조 판정한다.
+        # 활성 문서에서 참가자격 관련 본문을 모아 회사 정보와 대조 판정한다.
         q = state["question"] + " 입찰참가자격 요건 자격요건"
         retriever = retriever_fn(q, state.get("filename"))
         docs = retriever.invoke(q)
         rfp_text = "\n\n".join(d.page_content for d in docs)
-        # 회사 정보는 사용자 발화에서만 추출한다(어시스턴트 RFP 답변 오추출 방지).
-        result = check_eligibility(_user_messages(state.get("history")), rfp_text, cfg)
+
+        frontend_company = state.get("company_info")
+        if frontend_company:
+            # 프론트에서 company_info를 전달했으면 LLM 추출 없이 직접 판정한다.
+            backend_company = _frontend_to_backend_company(frontend_company)
+            result = check_eligibility_with_company_info(backend_company, rfp_text, cfg)
+        else:
+            # 전달이 없으면 기존 방식: 사용자 발화에서만 회사 정보를 추출한다.
+            result = check_eligibility(_user_messages(state.get("history")), rfp_text, cfg)
+
         return {"answer": result["message"], "sources": docs, "metadata": result}
 
     def _risk(state: GraphState) -> GraphState:
