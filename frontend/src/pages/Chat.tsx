@@ -142,7 +142,15 @@ export default function Chat() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     setLoading(true)
     try {
-      await doSend(q)
+      if (q.includes('인포그래픽')) {
+        const fn = contextFilename ?? undefined
+        const data = await sendInfographic({ question: q, ...(fn ? { filename: fn } : {}) })
+        addTurn({ kind: 'infographic', question: q, data })
+      } else if (q.includes('평가구조') || q.includes('평가배점 구조') || q.includes('다이어그램')) {
+        await doSend(q, 'evaluation', contextFilename ?? undefined)
+      } else {
+        await doSend(q)
+      }
     } catch {
       addTurn({ kind: 'chat', question: q, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
     } finally {

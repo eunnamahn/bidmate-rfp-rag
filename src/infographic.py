@@ -6,8 +6,20 @@ RFP 핵심 정보(dict)를 HTML/CSS 카드로 렌더링해 문자열로 반환�
 
 from __future__ import annotations
 
+import re
 import textwrap
 from typing import Dict
+
+
+def _parse_score(raw) -> int:
+    """LLM이 반환한 배점을 int로 변환한다.
+
+    "80점", "80/100", 80, 80.0 등 다양한 포맷을 처리한다.
+    """
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    m = re.search(r'\d+', str(raw or ''))
+    return int(m.group()) if m else 0
 
 
 def _esc(text: str) -> str:
@@ -39,8 +51,8 @@ def _build_html(data: Dict) -> str:
     score_bars = ""
     for es in eval_scores[:5]:
         name = _esc(str(es.get("name", "")))
-        score = int(es.get("score") or 0)
-        max_score = int(es.get("max_score") or 100)
+        score = _parse_score(es.get("score"))
+        max_score = _parse_score(es.get("max_score")) or 100
         pct = round(score / max_score * 100) if max_score else 0
         score_bars += f"""
         <div class="score-row">

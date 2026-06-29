@@ -57,7 +57,16 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
   } catch { /* ignore */ }
 
   const profile = buildProfile(companyInfo)
-  const bids = notices.map((n) => n.item)
+  const filteredNotices = notices.filter((n) => !!(n.item.ntceSpecDocUrl1 as string))
+  const bids = filteredNotices.map((n) => n.item)
+
+  // bidNtceNo → 원본 notice.item 역참조용 (인덱싱 시 _score 없는 원본을 전달하기 위함)
+  const noticeItemByNo = new Map<string, Record<string, unknown>>(
+    filteredNotices.flatMap((n) => {
+      const no = n.item.bidNtceNo as string | undefined
+      return no ? [[no, n.item]] : []
+    }),
+  )
 
   // 3. 점수화 — top_n:3 이므로 최대 3건만 반환됨
   const { data } = await api.post<{ results: Record<string, unknown>[] }>(
@@ -66,13 +75,18 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
   )
   const results = data.results ?? []
 
-  return results.map((r, i) => ({
-    id: (r.bidNtceNo as string) ?? String(i),
-    title: (r.bidNtceNm as string) ?? '(사업명 없음)',
-    organization: ((r.dmndInsttNm ?? r.ntceInsttNm) as string) ?? '',
-    deadline: parseDeadline(r),
-    matchScore: (r._score as number) ?? 0,
-    reason: makeReason((r._score as number) ?? 0, r),
-    item: r,
-  }))
+  return results.map((r, i) => {
+    const no = r.bidNtceNo as string | undefined
+    // card.item은 _score가 없는 원본 나라장터 API 응답 — /nara/ingest payload로 직접 사용
+    const noticeItem = (no ? noticeItemByNo.get(no) : undefined) ?? r
+    return {
+      id: no ?? String(i),
+      title: (r.bidNtceNm as string) ?? '(사업명 없음)',
+      organization: ((r.dmndInsttNm ?? r.ntceInsttNm) as string) ?? '',
+      deadline: parseDeadline(r),
+      matchScore: (r._score as number) ?? 0,
+      reason: makeReason((r._score as number) ?? 0, r),
+      item: noticeItem,
+    }
+  })
 }
