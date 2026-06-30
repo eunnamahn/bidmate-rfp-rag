@@ -51,6 +51,9 @@ _SYSTEM_QA = """당신은 공공기관 입찰 전문 컨설팅 스타트업 '입
 6. 수치(예산, 날짜, 기간 등)는 문서에 있는 그대로 정확하게 인용하세요.
 7. 여러 문서를 비교할 때는 각 문서의 내용을 명확히 구분해서 답변하세요.
 8. 표 형식은 원문이 표 형태인 경우에만 사용하고, 그 외에는 간결한 문장으로 답변하세요.
+9. "그 공고", "거기", "그것", "그럼" 등 대명사로 지칭되는 대상은 직전 대화에서 언급된 공고·기관을 기준으로 답변하세요. 임의로 다른 공고·기관으로 전환하지 마세요.
+10. 사용자가 새 주제를 명시하지 않는 한, 이전 대화에서 다루던 공고·기관을 계속 유지해서 답변하세요.
+11. 이전 답변과 모순되는 내용을 출력하지 마세요. 동일 문서에 대해 앞뒤가 다른 정보를 제공하면 안 됩니다.
 
 [출력 형식]
 - 핵심 정보를 먼저 답변하고, 필요시 부연 설명을 추가하세요.
@@ -96,7 +99,11 @@ SUMMARY_PROMPT = ChatPromptTemplate.from_messages(
 # 후속 질문 재작성용 프롬프트 (rewrite 전략)
 _REWRITE_PROMPT = """아래는 사용자와 어시스턴트의 대화 히스토리와 후속 질문입니다.
 후속 질문을 대화 맥락을 반영해서 독립적으로 이해할 수 있는 완성된 질문으로 재작성하세요.
-재작성된 질문만 출력하고 다른 설명은 하지 마세요.
+
+[재작성 규칙]
+- "그 공고", "거기", "그것", "그럼" 등 대명사나 생략된 주어가 있으면, 직전 대화에서 언급된 공고명 또는 기관명으로 반드시 대체하세요.
+- 질문의 의도(무엇을 묻는지)는 절대 바꾸지 마세요.
+- 재작성된 질문만 출력하고 다른 설명은 하지 마세요.
 
 [대화 히스토리]
 {history}
@@ -139,6 +146,23 @@ def rewrite_query(question: str, history: List[Tuple[str, str]], llm) -> str:
     prompt = _REWRITE_PROMPT.format(
         history=_format_history(history),
         question=question,
+    )
+    response = llm.invoke([{"role": "user", "content": prompt}])
+    return getattr(response, "content", str(response)).strip()
+
+
+def _summarize_old_history(old_turns: List[Tuple[str, str]], llm) -> str:
+    """MAX_HISTORY_TURNS를 초과한 오래된 대화를 LLM으로 한 줄 요약한다."""
+    if not old_turns:
+        return ""
+    lines = []
+    for user_msg, assistant_msg in old_turns:
+        lines.append(f"사용자: {user_msg}")
+        lines.append(f"어시스턴트: {assistant_msg}")
+    history_text = "\n".join(lines)
+    prompt = (
+        "아래 대화를 한 문장으로 요약하세요. 핵심 주제(공고명·기관명·주요 질문)를 포함하세요. "
+        "요약문만 출력하세요.\n\n" + history_text
     )
     response = llm.invoke([{"role": "user", "content": prompt}])
     return getattr(response, "content", str(response)).strip()
@@ -250,16 +274,33 @@ def generate_answer(
     mode: str = "qa",
     history: Optional[List[Tuple[str, str]]] = None,
     strategy: Optional[str] = None,
+    active_filename: Optional[str] = None,
 ) -> Tuple[str, List[Document]]:
     """질문에 대해 (답변, 근거 문서 리스트)를 반환한다.
 
-    history : [(user_msg, assistant_msg), ...] 대화 히스토리(없으면 단순 답변).
-    strategy: "full" | "rewrite" (None이면 config의 history.strategy).
+    history         : [(user_msg, assistant_msg), ...] 대화 히스토리(없으면 단순 답변).
+    strategy        : "full" | "rewrite" (None이면 config의 history.strategy).
+    active_filename : 현재 분석 중인 공고 파일명(지정 시 시스템 프롬프트에 명시).
     검색을 한 번만 수행해 답변과 근거를 같이 얻는다(백엔드 sources 표시용).
     """
     history = history or []
     strategy = strategy or HISTORY_STRATEGY
     system_text = _SYSTEM_QA if mode == "qa" else _SYSTEM_SUMMARY
+
+    # 현재 분석 중인 공고를 시스템 메시지에 명시
+    if active_filename:
+        system_text = system_text + f"\n\n[현재 분석 중인 공고]\n{active_filename}"
+
+    # 히스토리 압축: MAX_HISTORY_TURNS 초과분은 LLM으로 한 줄 요약해 시스템 메시지에 포함
+    if len(history) > MAX_HISTORY_TURNS:
+        old_turns = history[:-MAX_HISTORY_TURNS]
+        recent_turns = history[-MAX_HISTORY_TURNS:]
+        summary = _summarize_old_history(old_turns, llm)
+        if summary:
+            system_text = system_text + f"\n\n[이전 대화 요약]\n{summary}"
+    else:
+        recent_turns = history
+
     ask_label, ans_label = ("질문", "답변") if mode == "qa" else ("요청", "정리")
 
     # rewrite 전략: 후속 질문을 완성형으로 재작성한 뒤 검색(검색 품질 향상)
@@ -279,10 +320,10 @@ def generate_answer(
         "형식으로 적으세요. 사용하지 않은 자료 번호는 절대 넣지 마세요.)"
     )
 
-    # full 전략: 히스토리를 메시지로 통째로 포함해 문맥 유지
+    # full 전략: 최근 MAX_HISTORY_TURNS 턴을 메시지로 포함해 문맥 유지
     messages = [{"role": "system", "content": system_text}]
-    if strategy == "full" and history:
-        for user_msg, assistant_msg in history[-MAX_HISTORY_TURNS:]:
+    if strategy == "full" and recent_turns:
+        for user_msg, assistant_msg in recent_turns:
             messages.append({"role": "user", "content": user_msg})
             messages.append({"role": "assistant", "content": assistant_msg})
     messages.append({"role": "user", "content": user_content})

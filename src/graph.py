@@ -281,17 +281,21 @@ def build_graph(cfg: Dict[str, Any], llm, retriever_fn: RetrieverFn):
 
     def _qa(state: GraphState) -> GraphState:
         q = _search_query(state, "question")
-        retriever = retriever_fn(q, state.get("filename"))
+        filename = state.get("filename")
+        retriever = retriever_fn(q, filename)
         answer, sources = generate_answer(
             retriever, llm, q, mode="qa", history=state.get("history") or [],
+            active_filename=filename,
         )
         return {"answer": answer, "sources": sources}
 
     def _summary(state: GraphState) -> GraphState:
         q = _search_query(state, "query")
-        retriever = retriever_fn(q, state.get("filename"))
+        filename = state.get("filename")
+        retriever = retriever_fn(q, filename)
         answer, sources = generate_answer(
             retriever, llm, q, mode="summary", history=state.get("history") or [],
+            active_filename=filename,
         )
         return {"answer": answer, "sources": sources}
 
