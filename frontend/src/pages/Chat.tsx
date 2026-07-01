@@ -158,6 +158,18 @@ export default function Chat() {
     }
   }
 
+  async function handleQuickSend(question: string, agent: string) {
+    if (loading) return
+    setLoading(true)
+    try {
+      await doSend(question, agent, contextFilename ?? undefined)
+    } catch {
+      addTurn({ kind: 'chat', question, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleAgentAction = useCallback(async (agent: Agent) => {
     if (loading) return
 
@@ -329,15 +341,16 @@ export default function Chat() {
                 </p>
                 <div className="grid grid-cols-2 gap-3 mt-8 w-full max-w-sm">
                   {[
-                    { q: 'RFP 핵심 요약해줘', icon: '📄' },
-                    { q: '입찰 참가 자격 확인해줘', icon: '✅' },
-                    { q: '리스크 요소 알려줘', icon: '⚠️' },
-                    { q: '평가 배점 구조 보여줘', icon: '📊' },
+                    { q: 'RFP 핵심 요약해줘', icon: '📄', agent: 'summary' },
+                    { q: '입찰 참가 자격 확인해줘', icon: '✅', agent: 'eligibility' },
+                    { q: '리스크 요소 알려줘', icon: '⚠️', agent: 'risk' },
+                    { q: '평가 배점 구조 보여줘', icon: '📊', agent: 'evaluation' },
                   ].map((item) => (
                     <button
                       key={item.q}
-                      onClick={() => { setInput(item.q); textareaRef.current?.focus() }}
-                      className="text-left p-3 bg-gray-50 hover:bg-primary-50 border border-gray-100 hover:border-primary-200 rounded-xl text-sm text-gray-600 hover:text-primary-700 transition-colors"
+                      onClick={() => handleQuickSend(item.q, item.agent)}
+                      disabled={loading}
+                      className="text-left p-3 bg-gray-50 hover:bg-primary-50 border border-gray-100 hover:border-primary-200 rounded-xl text-sm text-gray-600 hover:text-primary-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <span className="block mb-1">{item.icon}</span>
                       {item.q}

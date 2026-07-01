@@ -1,4 +1,5 @@
 import { memo, useState } from 'react'
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Turn, ChatResponse, InfographicResponse, Source } from '../types'
@@ -6,6 +7,40 @@ import MermaidDiagram from './MermaidDiagram'
 import { fileViewUrl, fileDownloadUrl } from '../api/documents'
 
 const MERMAID_RE = /```mermaid\s*([\s\S]*?)```/
+
+const RISK_RE = /(\[높음\]|\[중간\]|\[낮음\])/g
+const RISK_STYLES: Record<string, string> = {
+  '[높음]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700',
+  '[중간]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700',
+  '[낮음]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700',
+}
+
+function injectBadges(text: string): React.ReactNode {
+  const parts = text.split(RISK_RE)
+  if (parts.length === 1) return text
+  return parts.map((part, i) => {
+    const cls = RISK_STYLES[part]
+    return cls ? <span key={i} className={cls}>{part}</span> : part
+  })
+}
+
+function processChildren(children: React.ReactNode): React.ReactNode {
+  return React.Children.map(children, (child) =>
+    typeof child === 'string' ? injectBadges(child) : child,
+  )
+}
+
+const riskComponents = {
+  p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
+    <p {...props}>{processChildren(children)}</p>
+  ),
+  li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
+    <li {...props}>{processChildren(children)}</li>
+  ),
+  td: ({ children, ...props }: React.ComponentPropsWithoutRef<'td'>) => (
+    <td {...props}>{processChildren(children)}</td>
+  ),
+}
 
 function SourcesPanel({ sources }: { sources: Source[] }) {
   const [open, setOpen] = useState(false)
@@ -59,16 +94,16 @@ const AnswerContent = memo(function AnswerContent({ data }: { data: ChatResponse
     const after = answer.slice(m.index + m[0].length).trim()
     return (
       <>
-        {before && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]}>{before}</ReactMarkdown></div>}
+        {before && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{before}</ReactMarkdown></div>}
         <MermaidDiagram code={code} />
-        {after && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]}>{after}</ReactMarkdown></div>}
+        {after && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{after}</ReactMarkdown></div>}
         <SourcesPanel sources={data.sources || []} />
       </>
     )
   }
   return (
     <>
-      <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown></div>
+      <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{answer}</ReactMarkdown></div>
       <SourcesPanel sources={data.sources || []} />
     </>
   )
