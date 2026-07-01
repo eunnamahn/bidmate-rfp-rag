@@ -57,7 +57,17 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
   } catch { /* ignore */ }
 
   const profile = buildProfile(companyInfo)
-  const filteredNotices = notices.filter((n) => !!(n.item.ntceSpecDocUrl1 as string))
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const filteredNotices = notices.filter((n) => {
+    if (!(n.item.ntceSpecDocUrl1 as string)) return false
+    const raw = (n.item.bidClseDt as string) ?? ''
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length < 8) return false
+    const closeDate = new Date(`${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`)
+    return closeDate >= today
+  })
   const bids = filteredNotices.map((n) => n.item)
 
   // bidNtceNo → 원본 notice.item 역참조용 (인덱싱 시 _score 없는 원본을 전달하기 위함)
