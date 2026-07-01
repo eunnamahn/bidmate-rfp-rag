@@ -45,9 +45,18 @@ function makeReason(score: number, item: Record<string, unknown>): string {
   return '기본 입찰 자격을 충족하며 마감 여유가 있는 공고입니다.'
 }
 
+async function fetchNotices() {
+  // 스케줄러 캐시 우선 시도, 비어있거나 실패하면 직접 검색으로 fallback
+  try {
+    const { data } = await api.get<{ notices: unknown[] }>('/nara/recommend-cache')
+    if (data.notices?.length) return data.notices as import('../types').NaraNotice[]
+  } catch { /* ignore */ }
+  return naraSearch('', 7)
+}
+
 export async function fetchRecommend(): Promise<RecommendCard[]> {
-  // 1. 나라장터 최근 7일 공고 목록 (메타데이터만, 다운로드 없음)
-  const notices = await naraSearch('', 7)
+  // 1. 나라장터 최근 7일 공고 목록 (캐시 우선, fallback: 직접 검색)
+  const notices = await fetchNotices()
   if (!notices.length) return []
 
   // 2. localStorage 회사 정보
@@ -57,7 +66,17 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
   } catch { /* ignore */ }
 
   const profile = buildProfile(companyInfo)
-  const filteredNotices = notices.filter((n) => !!(n.item.ntceSpecDocUrl1 as string))
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const filteredNotices = notices.filter((n) => {
+    if (!(n.item.ntceSpecDocUrl1 as string)) return false
+    const raw = (n.item.bidClseDt as string) ?? ''
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length < 8) return false
+    const closeDate = new Date(`${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`)
+    return closeDate >= today
+  })
   const bids = filteredNotices.map((n) => n.item)
 
   // bidNtceNo → 원본 notice.item 역참조용 (인덱싱 시 _score 없는 원본을 전달하기 위함)
