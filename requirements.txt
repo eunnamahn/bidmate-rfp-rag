@@ -27,3 +27,5 @@ hwp-hwpx-parser
 langchain-huggingface
 langchain-ollama
 sentence-transformers
+# 스케줄러
+apscheduler

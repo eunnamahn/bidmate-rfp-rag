@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 import secrets
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
+
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -208,11 +211,33 @@ def _current_settings() -> Dict[str, Any]:
     }
 
 
+def _refresh_nara_cache() -> None:
+    """나라장터 최근 7일 공고 메타데이터를 가져와 _STATE["nara_cache"]에 저장한다."""
+    cfg = _STATE.get("cfg")
+    if not cfg:
+        return
+    try:
+        items = nara_agent.search_notices(cfg, keyword=None, days=7)
+        _STATE["nara_cache"] = items
+        logging.info("나라장터 캐시 갱신 완료: %d건", len(items))
+    except Exception as e:
+        logging.warning("나라장터 캐시 갱신 실패: %s", e)
+
+
 @app.on_event("startup")
 def _startup() -> None:
     cfg = load_config("config.yaml")
     # 기동 시 캐시가 없으면 재인덱싱이 일어날 수 있다(시간 소요).
     _rebuild(cfg)
+
+    # 서버 시작 시 1회 즉시 캐시 초기화
+    _refresh_nara_cache()
+
+    # 매일 09:00 / 13:00 / 17:00 (KST) 자동 갱신
+    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+    scheduler.add_job(_refresh_nara_cache, "cron", hour="9,13,17", minute=0)
+    scheduler.start()
+    _STATE["_scheduler"] = scheduler  # GC 방지용 참조 보관
 
 
 # ─── 인증 헬퍼 ────────────────────────────────────────────────────────────────
@@ -647,6 +672,16 @@ def nara_search(q: str = "", date: Optional[str] = None, days: int = 3) -> Dict[
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"나라장터 검색 실패: {e}")
 
+    notices = [
+        NaraNotice(**nara_agent.notice_summary(it), item=it) for it in items
+    ]
+    return {"count": len(notices), "notices": [n.model_dump() for n in notices]}
+
+
+@app.get("/nara/recommend-cache")
+def nara_recommend_cache() -> Dict[str, Any]:
+    """스케줄러가 주기적으로 갱신한 나라장터 공고 캐시를 반환한다(인덱싱 없음)."""
+    items = _STATE.get("nara_cache", [])
     notices = [
         NaraNotice(**nara_agent.notice_summary(it), item=it) for it in items
     ]

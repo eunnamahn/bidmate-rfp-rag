@@ -45,9 +45,18 @@ function makeReason(score: number, item: Record<string, unknown>): string {
   return '기본 입찰 자격을 충족하며 마감 여유가 있는 공고입니다.'
 }
 
+async function fetchNotices() {
+  // 스케줄러 캐시 우선 시도, 비어있거나 실패하면 직접 검색으로 fallback
+  try {
+    const { data } = await api.get<{ notices: unknown[] }>('/nara/recommend-cache')
+    if (data.notices?.length) return data.notices as import('../types').NaraNotice[]
+  } catch { /* ignore */ }
+  return naraSearch('', 7)
+}
+
 export async function fetchRecommend(): Promise<RecommendCard[]> {
-  // 1. 나라장터 최근 7일 공고 목록 (메타데이터만, 다운로드 없음)
-  const notices = await naraSearch('', 7)
+  // 1. 나라장터 최근 7일 공고 목록 (캐시 우선, fallback: 직접 검색)
+  const notices = await fetchNotices()
   if (!notices.length) return []
 
   // 2. localStorage 회사 정보
