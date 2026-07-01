@@ -9,16 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.51.1",
     "axios": "^1.7.2",
+    "lucide-react": "^0.400.0",
+    "mermaid": "^11.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.24.0",
     "react-markdown": "^9.0.1",
+    "react-router-dom": "^6.24.0",
+    "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.0",
-    "zustand": "^4.5.4",
-    "mermaid": "^11.1.0",
-    "lucide-react": "^0.400.0",
-    "@tanstack/react-query": "^5.51.1"
+    "zustand": "^4.5.4"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

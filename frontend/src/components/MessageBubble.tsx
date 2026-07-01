@@ -1,45 +1,21 @@
 import { memo, useState } from 'react'
-import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
 import { Turn, ChatResponse, InfographicResponse, Source } from '../types'
 import MermaidDiagram from './MermaidDiagram'
 import { fileViewUrl, fileDownloadUrl } from '../api/documents'
 
 const MERMAID_RE = /```mermaid\s*([\s\S]*?)```/
 
-const RISK_RE = /(\[높음\]|\[중간\]|\[낮음\])/g
-const RISK_STYLES: Record<string, string> = {
-  '[높음]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700',
-  '[중간]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700',
-  '[낮음]': 'inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700',
-}
+const RISK_BADGE_MAP: [RegExp, string][] = [
+  [/\[높음\]/g, '<span style="background:#fee2e2;color:#b91c1c;padding:2px 6px;border-radius:4px;font-weight:bold">[높음]</span>'],
+  [/\[중간\]/g, '<span style="background:#ffedd5;color:#c2410c;padding:2px 6px;border-radius:4px;font-weight:bold">[중간]</span>'],
+  [/\[낮음\]/g, '<span style="background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-weight:bold">[낮음]</span>'],
+]
 
-function injectBadges(text: string): React.ReactNode {
-  const parts = text.split(RISK_RE)
-  if (parts.length === 1) return text
-  return parts.map((part, i) => {
-    const cls = RISK_STYLES[part]
-    return cls ? <span key={i} className={cls}>{part}</span> : part
-  })
-}
-
-function processChildren(children: React.ReactNode): React.ReactNode {
-  return React.Children.map(children, (child) =>
-    typeof child === 'string' ? injectBadges(child) : child,
-  )
-}
-
-const riskComponents = {
-  p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
-    <p {...props}>{processChildren(children)}</p>
-  ),
-  li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-    <li {...props}>{processChildren(children)}</li>
-  ),
-  td: ({ children, ...props }: React.ComponentPropsWithoutRef<'td'>) => (
-    <td {...props}>{processChildren(children)}</td>
-  ),
+function injectRiskBadges(text: string): string {
+  return RISK_BADGE_MAP.reduce((s, [re, html]) => s.replace(re, html), text)
 }
 
 function SourcesPanel({ sources }: { sources: Source[] }) {
@@ -86,7 +62,7 @@ function SourcesPanel({ sources }: { sources: Source[] }) {
 // memo로 감싸 새 메시지 추가 시 ActionBar prop 변경으로 인한 부모 리렌더가
 // AnswerContent까지 전파되지 않게 한다. data가 동일 참조라면 MermaidDiagram도 리렌더되지 않는다.
 const AnswerContent = memo(function AnswerContent({ data }: { data: ChatResponse }) {
-  const answer = data.answer || ''
+  const answer = injectRiskBadges(data.answer || '')
   const m = MERMAID_RE.exec(answer)
   if (m) {
     const before = answer.slice(0, m.index).trim()
@@ -94,16 +70,16 @@ const AnswerContent = memo(function AnswerContent({ data }: { data: ChatResponse
     const after = answer.slice(m.index + m[0].length).trim()
     return (
       <>
-        {before && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{before}</ReactMarkdown></div>}
+        {before && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{before}</ReactMarkdown></div>}
         <MermaidDiagram code={code} />
-        {after && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{after}</ReactMarkdown></div>}
+        {after && <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{after}</ReactMarkdown></div>}
         <SourcesPanel sources={data.sources || []} />
       </>
     )
   }
   return (
     <>
-      <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} components={riskComponents}>{answer}</ReactMarkdown></div>
+      <div className="prose-chat"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{answer}</ReactMarkdown></div>
       <SourcesPanel sources={data.sources || []} />
     </>
   )
