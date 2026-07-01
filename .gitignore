@@ -50,3 +50,6 @@ notebooklm_eval.json
 # Node.js
 frontend/node_modules/
 frontend/dist/
+
+# Vite 캐시
+frontend/.vite/
