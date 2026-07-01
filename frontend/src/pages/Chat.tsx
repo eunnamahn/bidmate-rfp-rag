@@ -11,6 +11,45 @@ import Sidebar from '../components/Sidebar'
 import MessageBubble from '../components/MessageBubble'
 import ActionBar from '../components/ActionBar'
 
+const LOADING_MESSAGES = [
+  '📄 RFP 문서를 분석하고 있습니다...',
+  '🔍 관련 조항을 검토하고 있습니다...',
+  '✍️ 답변을 작성하고 있습니다...',
+  '📊 데이터를 정리하고 있습니다...',
+  '⚖️ 입찰 조건을 확인하고 있습니다...',
+]
+
+function LoadingBubble() {
+  const [idx, setIdx] = useState(0)
+  useEffect(() => {
+    const id = setInterval(
+      () => setIdx((i) => (i + 1) % LOADING_MESSAGES.length),
+      2500,
+    )
+    return () => clearInterval(id)
+  }, [])
+  return (
+    <div className="flex justify-start">
+      <div className="flex gap-2.5">
+        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary-100 flex items-center justify-center mt-0.5">
+          <svg className="w-4 h-4 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+          </svg>
+        </div>
+        <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+          <div className="flex gap-1 items-center mb-2">
+            <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+            <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+            <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+          </div>
+          <p className="text-xs text-gray-400 transition-all duration-500">{LOADING_MESSAGES[idx]}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function useContextFilename() {
   const activeFilename = useStore((s) => s.activeFilename)
   const turns = useCurrentTurns()
@@ -75,6 +114,7 @@ export default function Chat() {
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [modal, setModal] = useState<ModalType>(null)
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -140,6 +180,7 @@ export default function Chat() {
     if (!q || loading) return
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    setPendingQuestion(q)
     setLoading(true)
     try {
       if (q.includes('인포그래픽')) {
@@ -154,18 +195,21 @@ export default function Chat() {
     } catch {
       addTurn({ kind: 'chat', question: q, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
     } finally {
+      setPendingQuestion(null)
       setLoading(false)
     }
   }
 
   async function handleQuickSend(question: string, agent: string) {
     if (loading) return
+    setPendingQuestion(question)
     setLoading(true)
     try {
       await doSend(question, agent, contextFilename ?? undefined)
     } catch {
       addTurn({ kind: 'chat', question, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
     } finally {
+      setPendingQuestion(null)
       setLoading(false)
     }
   }
@@ -187,6 +231,7 @@ export default function Chat() {
         setModal('no-company')
         return
       }
+      setPendingQuestion(question)
       setLoading(true)
       try {
         if (agent.endpoint === '/infographic') {
@@ -198,12 +243,14 @@ export default function Chat() {
       } catch {
         addTurn({ kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
       } finally {
+        setPendingQuestion(null)
         setLoading(false)
       }
       return
     }
 
     // 일반 에이전트
+    setPendingQuestion(question)
     setLoading(true)
     try {
       if (agent.endpoint === '/infographic') {
@@ -215,6 +262,7 @@ export default function Chat() {
     } catch {
       addTurn({ kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
     } finally {
+      setPendingQuestion(null)
       setLoading(false)
     }
   }, [loading, contextFilename, user])
@@ -374,25 +422,15 @@ export default function Chat() {
               )
             })}
 
-            {loading && (
-              <div className="flex justify-start">
-                <div className="flex gap-2.5">
-                  <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary-100 flex items-center justify-center">
-                    <svg className="w-4 h-4 text-primary-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                    </svg>
-                  </div>
-                  <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
-                    <div className="flex gap-1 items-center">
-                      <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="w-2 h-2 rounded-full bg-primary-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </div>
-                  </div>
+            {pendingQuestion && (
+              <div className="flex justify-end">
+                <div className="max-w-[75%] bg-primary-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm">
+                  {pendingQuestion}
                 </div>
               </div>
             )}
+
+            {loading && <LoadingBubble />}
 
             <div ref={bottomRef} />
           </div>
