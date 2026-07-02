@@ -32,7 +32,11 @@ export default function CompanySetup() {
 
   useEffect(() => {
     getCompany().then((data) => {
-      if (data) { setForm(data); setIsEdit(true) }
+      if (data) {
+        setForm(data); setIsEdit(true)
+        // 추천/게이팅이 읽는 localStorage와 백엔드 저장값을 동기화
+        localStorage.setItem('company_info', JSON.stringify(data))
+      }
     })
   }, [])
 
@@ -52,6 +56,8 @@ export default function CompanySetup() {
     setLoading(true)
     try {
       if (isEdit) { await updateCompany(form) } else { await saveCompany(form) }
+      // RecommendCards 게이팅과 recommend.ts 프로필 생성이 읽는 값
+      localStorage.setItem('company_info', JSON.stringify(form))
       setHasCompanyInfo(true)
       navigate('/')
     } catch {
