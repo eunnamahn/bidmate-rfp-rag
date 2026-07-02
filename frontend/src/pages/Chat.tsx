@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { Paperclip } from 'lucide-react'
-import { useQuery } from '@tanstack/react-query'
-import { useStore, useCurrentTurns } from '../store/useStore'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useStore, useCurrentTurns, useCurrentLoading, useCurrentPendingQuestion } from '../store/useStore'
 import { sendChat, sendInfographic, fetchAgents } from '../api/chat'
 import { fetchDocuments, uploadFile } from '../api/documents'
 import { getCompany } from '../api/company'
@@ -10,6 +10,9 @@ import { Agent, Turn, ChatResponse, CompanyInfo } from '../types'
 import Sidebar from '../components/Sidebar'
 import MessageBubble from '../components/MessageBubble'
 import ActionBar from '../components/ActionBar'
+import ActiveDocumentBadge from '../components/ActiveDocumentBadge'
+import NaraSearch from '../components/NaraSearch'
+import RecommendCards from '../components/RecommendCards'
 
 const LOADING_MESSAGES = [
   '📄 RFP 문서를 분석하고 있습니다...',
@@ -110,11 +113,10 @@ function CompanyInfoModal({ type, onClose }: { type: ModalType; onClose: () => v
 }
 
 export default function Chat() {
+  const queryClient = useQueryClient()
   const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [modal, setModal] = useState<ModalType>(null)
-  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -122,15 +124,19 @@ export default function Chat() {
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const toggleSidebar = useStore((s) => s.toggleSidebar)
   const addTurn = useStore((s) => s.addTurn)
+  const setSessionLoading = useStore((s) => s.setSessionLoading)
+  const setSessionPendingQuestion = useStore((s) => s.setSessionPendingQuestion)
   const user = useStore((s) => s.user)
-  const documents = useStore((s) => s.documents)
   const setDocuments = useStore((s) => s.setDocuments)
   const agents = useStore((s) => s.agents)
   const setAgents = useStore((s) => s.setAgents)
   const activeFilename = useStore((s) => s.activeFilename)
   const setActiveFilename = useStore((s) => s.setActiveFilename)
+  const mainView = useStore((s) => s.mainView)
 
   const turns = useCurrentTurns()
+  const loading = useCurrentLoading()
+  const pendingQuestion = useCurrentPendingQuestion()
   const contextFilename = useContextFilename()
 
   const { data: docsData } = useQuery({
@@ -156,6 +162,7 @@ export default function Chat() {
   }
 
   async function doSend(
+    sessionId: string,
     question: string,
     agent?: string,
     filename?: string,
@@ -171,46 +178,48 @@ export default function Chat() {
       ...(companyInfo ? { company_info: companyInfo } : {}),
     }
     const data = await sendChat(payload)
-    addTurn({ kind: 'chat', question, data })
+    addTurn(sessionId, { kind: 'chat', question, data })
     return data
   }
 
   async function handleSend() {
     const q = input.trim()
     if (!q || loading) return
+    const sessionId = useStore.getState().currentSessionId
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
-    setPendingQuestion(q)
-    setLoading(true)
+    setSessionPendingQuestion(sessionId, q)
+    setSessionLoading(sessionId, true)
     try {
       if (q.includes('인포그래픽')) {
         const fn = contextFilename ?? undefined
         const data = await sendInfographic({ question: q, ...(fn ? { filename: fn } : {}) })
-        addTurn({ kind: 'infographic', question: q, data })
+        addTurn(sessionId, { kind: 'infographic', question: q, data })
       } else if (q.includes('평가구조') || q.includes('평가배점 구조') || q.includes('다이어그램')) {
-        await doSend(q, 'evaluation', contextFilename ?? undefined)
+        await doSend(sessionId, q, 'evaluation', contextFilename ?? undefined)
       } else {
-        await doSend(q)
+        await doSend(sessionId, q)
       }
     } catch {
-      addTurn({ kind: 'chat', question: q, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
+      addTurn(sessionId, { kind: 'chat', question: q, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
     } finally {
-      setPendingQuestion(null)
-      setLoading(false)
+      setSessionPendingQuestion(sessionId, null)
+      setSessionLoading(sessionId, false)
     }
   }
 
   async function handleQuickSend(question: string, agent: string) {
     if (loading) return
-    setPendingQuestion(question)
-    setLoading(true)
+    const sessionId = useStore.getState().currentSessionId
+    setSessionPendingQuestion(sessionId, question)
+    setSessionLoading(sessionId, true)
     try {
-      await doSend(question, agent, contextFilename ?? undefined)
+      await doSend(sessionId, question, agent, contextFilename ?? undefined)
     } catch {
-      addTurn({ kind: 'chat', question, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
+      addTurn(sessionId, { kind: 'chat', question, data: { answer: '오류가 발생했습니다. 백엔드를 확인해주세요.', refused: true } })
     } finally {
-      setPendingQuestion(null)
-      setLoading(false)
+      setSessionPendingQuestion(sessionId, null)
+      setSessionLoading(sessionId, false)
     }
   }
 
@@ -231,39 +240,41 @@ export default function Chat() {
         setModal('no-company')
         return
       }
-      setPendingQuestion(question)
-      setLoading(true)
+      const sessionId = useStore.getState().currentSessionId
+      setSessionPendingQuestion(sessionId, question)
+      setSessionLoading(sessionId, true)
       try {
         if (agent.endpoint === '/infographic') {
           const data = await sendInfographic({ question, ...(fn ? { filename: fn } : {}) })
-          addTurn({ kind: 'infographic', question, data })
+          addTurn(sessionId, { kind: 'infographic', question, data })
         } else {
-          await doSend(question, agent.id, fn, companyInfo)
+          await doSend(sessionId, question, agent.id, fn, companyInfo)
         }
       } catch {
-        addTurn({ kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
+        addTurn(sessionId, { kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
       } finally {
-        setPendingQuestion(null)
-        setLoading(false)
+        setSessionPendingQuestion(sessionId, null)
+        setSessionLoading(sessionId, false)
       }
       return
     }
 
     // 일반 에이전트
-    setPendingQuestion(question)
-    setLoading(true)
+    const sessionId = useStore.getState().currentSessionId
+    setSessionPendingQuestion(sessionId, question)
+    setSessionLoading(sessionId, true)
     try {
       if (agent.endpoint === '/infographic') {
         const data = await sendInfographic({ question, ...(fn ? { filename: fn } : {}) })
-        addTurn({ kind: 'infographic', question, data })
+        addTurn(sessionId, { kind: 'infographic', question, data })
       } else {
-        await doSend(question, agent.id, fn)
+        await doSend(sessionId, question, agent.id, fn)
       }
     } catch {
-      addTurn({ kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
+      addTurn(sessionId, { kind: 'chat', question, data: { answer: '에이전트 실행 중 오류가 발생했습니다.', refused: true } })
     } finally {
-      setPendingQuestion(null)
-      setLoading(false)
+      setSessionPendingQuestion(sessionId, null)
+      setSessionLoading(sessionId, false)
     }
   }, [loading, contextFilename, user])
 
@@ -272,6 +283,7 @@ export default function Chat() {
     const file = e.target.files?.[0]
     if (!file) return
     e.target.value = ''
+    const sessionId = useStore.getState().currentSessionId
     setUploading(true)
     try {
       const result = await uploadFile(file)
@@ -279,7 +291,7 @@ export default function Chat() {
       setDocuments(docs)
       setActiveFilename(result.파일명)
     } catch {
-      addTurn({
+      addTurn(sessionId, {
         kind: 'chat',
         question: `[파일 업로드: ${file.name}]`,
         data: { answer: '파일 업로드에 실패했습니다. 백엔드를 확인해주세요.', refused: true },
@@ -300,12 +312,6 @@ export default function Chat() {
     setInput(e.target.value)
     e.target.style.height = 'auto'
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px'
-  }
-
-  function activeDocLabel() {
-    if (!activeFilename) return null
-    const d = documents.find((d) => d.파일명 === activeFilename)
-    return d ? `${d.사업명 || activeFilename} · ${d.기관 || '미상'}` : activeFilename
   }
 
   const showActionBar = !!contextFilename && agents.length > 0
@@ -331,17 +337,12 @@ export default function Chat() {
 
           {/* 현재 문서 표시 — flex-1로 남는 공간 차지 */}
           <div className="flex-1 min-w-0">
-            {activeFilename ? (
-              <div className="flex items-center gap-2 min-w-0">
-                <svg className="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span className="text-sm font-medium text-gray-800 truncate">{activeDocLabel()}</span>
-                <span className="text-xs bg-primary-50 text-primary-700 px-2 py-0.5 rounded-full flex-shrink-0">분석 중</span>
-              </div>
+            {mainView === 'chat' ? (
+              <ActiveDocumentBadge />
             ) : (
-              <span className="text-sm text-gray-400">전체 문서 대상으로 검색 중</span>
+              <span className="text-sm font-medium text-gray-800">
+                {mainView === 'nara' ? '나라장터 검색' : 'AI 추천 공고'}
+              </span>
             )}
           </div>
 
@@ -350,7 +351,11 @@ export default function Chat() {
             <div className="flex items-center gap-2 flex-shrink-0">
               <span className="text-xs text-gray-400 hidden sm:block truncate max-w-[140px]">{user.email}</span>
               <button
-                onClick={() => useStore.getState().clearAuth()}
+                onClick={() => {
+                  useStore.getState().clearAuth()
+                  // 유저 스코프 캐시(추천 결과 등)가 다음 로그인 계정으로 새어가지 않도록 전체 비움
+                  queryClient.clear()
+                }}
                 className="text-xs text-gray-400 hover:text-red-500 border border-gray-200 hover:border-red-200 px-2.5 py-1.5 rounded-lg transition-colors"
               >
                 로그아웃
@@ -370,6 +375,20 @@ export default function Chat() {
           )}
         </header>
 
+        {mainView === 'nara' && (
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <NaraSearch />
+          </div>
+        )}
+
+        {mainView === 'recommend' && (
+          <div className="flex-1 overflow-y-auto px-6 py-6">
+            <RecommendCards />
+          </div>
+        )}
+
+        {mainView === 'chat' && (
+        <>
         {/* 채팅 영역 */}
         <div className="flex-1 overflow-y-auto px-4 py-6">
           <div className="max-w-3xl mx-auto space-y-6">
@@ -493,6 +512,8 @@ export default function Chat() {
             </p>
           </div>
         </div>
+        </>
+        )}
       </div>
     </div>
   )

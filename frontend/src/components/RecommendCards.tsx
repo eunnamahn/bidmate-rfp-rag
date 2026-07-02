@@ -1,32 +1,46 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { fetchRecommend } from '../api/recommend'
-import { naraIngest } from '../api/nara'
+import {
+  naraIngest,
+  isNaraNoContentError,
+  NARA_NO_CONTENT_PREFIX,
+  NARA_NO_CONTENT_LINK_TEXT,
+} from '../api/nara'
 import { fetchDocuments } from '../api/documents'
 import { useStore } from '../store/useStore'
+import { useInfiniteReveal } from '../hooks/useInfiniteReveal'
+import ProcurementCard from './ProcurementCard'
 
-function hasCompanyInfo(): boolean {
-  try { return !!localStorage.getItem('company_info') }
-  catch { return false }
-}
+const PAGE_SIZE = 12
 
 export default function RecommendCards() {
   const user = useStore((s) => s.user)
   const setDocuments = useStore((s) => s.setDocuments)
   const setActiveFilename = useStore((s) => s.setActiveFilename)
+  const setMainView = useStore((s) => s.setMainView)
   const [ingesting, setIngesting] = useState<string | null>(null)
-  const [ingestError, setIngestError] = useState<string | null>(null)
+  const [ingestError, setIngestError] = useState<
+    { noContent: true; detailUrl?: string } | { noContent: false; message: string } | null
+  >(null)
 
-  const ready = !!user && hasCompanyInfo()
+  // 회사 정보 등록 여부는 store의 user.hasCompanyInfo(백엔드 /company 기준)로 판단한다.
+  const ready = !!user && !!user.hasCompanyInfo
 
+  // queryKey에 user.id를 반드시 포함한다 — QueryClient가 앱 전역 싱글턴이라
+  // 키가 유저별로 분리되지 않으면 로그아웃 후 다른 계정으로 로그인해도
+  // 이전 계정의 추천 결과가 staleTime(5분) 동안 그대로 재사용된다.
   const { data: cards = [], isLoading, isError } = useQuery({
-    queryKey: ['recommend'],
+    queryKey: ['recommend', user?.id],
     queryFn: fetchRecommend,
     staleTime: 5 * 60_000,
     retry: 1,
     enabled: ready,
   })
+
+  const { visibleCount, sentinelRef, reset } = useInfiniteReveal(PAGE_SIZE)
+  useEffect(() => { reset() }, [cards, reset])
 
   async function handleIngest(card: typeof cards[0]) {
     if (ingesting === card.id) return
@@ -37,8 +51,13 @@ export default function RecommendCards() {
       const docs = await fetchDocuments()
       setDocuments(docs)
       setActiveFilename(result.파일명)
-    } catch {
-      setIngestError('첨부파일을 가져올 수 없습니다. 다른 공고를 선택해주세요.')
+      setMainView('chat')
+    } catch (e) {
+      if (isNaraNoContentError(e)) {
+        setIngestError({ noContent: true, detailUrl: (card.item.bidNtceDtlUrl as string) || undefined })
+      } else {
+        setIngestError({ noContent: false, message: '첨부파일을 가져올 수 없습니다. 다른 공고를 선택해주세요.' })
+      }
     } finally {
       setIngesting(null)
     }
@@ -72,9 +91,9 @@ export default function RecommendCards() {
 
   if (isLoading) {
     return (
-      <div className="space-y-2">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {Array.from({ length: PAGE_SIZE }).map((_, i) => (
+          <div key={i} className="h-56 bg-gray-100 rounded-xl animate-pulse" />
         ))}
       </div>
     )
@@ -97,43 +116,56 @@ export default function RecommendCards() {
     )
   }
 
+  const visibleCards = cards.slice(0, visibleCount)
+
   return (
-    <div className="space-y-2">
-      <p className="text-xs text-gray-400 mb-2">나라장터 최근 공고 · 회사 프로필 매칭 Top 3</p>
+    <div className="space-y-3">
+      <p className="text-xs text-gray-400 mb-1">나라장터 최근 공고 · 회사 프로필 매칭순</p>
       {ingestError && (
-        <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">{ingestError}</p>
+        <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">
+          {ingestError.noContent ? (
+            <>
+              {NARA_NO_CONTENT_PREFIX}
+              {ingestError.detailUrl ? (
+                <a
+                  href={ingestError.detailUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 font-medium"
+                >
+                  {NARA_NO_CONTENT_LINK_TEXT}
+                </a>
+              ) : (
+                NARA_NO_CONTENT_LINK_TEXT
+              )}
+            </>
+          ) : (
+            ingestError.message
+          )}
+        </p>
       )}
-      {cards.map((card) => (
-        <div
-          key={card.id}
-          className={`bg-white border rounded-lg p-3 transition-colors group cursor-pointer ${
-            ingesting === card.id
-              ? 'border-primary-300 bg-primary-50/30'
-              : 'border-gray-100 hover:border-primary-300'
-          }`}
-          onClick={() => handleIngest(card)}
-        >
-          <div className="flex items-start justify-between gap-2 mb-1.5">
-            <p className="text-xs font-medium text-gray-800 leading-snug flex-1 group-hover:text-primary-700">
-              {card.title}
-            </p>
-            {ingesting === card.id ? (
-              <svg className="flex-shrink-0 w-4 h-4 text-primary-500 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : (
-              <span className="flex-shrink-0 text-xs font-bold text-primary-600 bg-primary-50 px-1.5 py-0.5 rounded">
-                {card.matchScore}%
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-gray-400">{card.organization} · ~{card.deadline}</p>
-          <p className={`text-xs mt-1 leading-relaxed ${ingesting === card.id ? 'text-primary-600 font-medium' : 'text-gray-500'}`}>
-            {ingesting === card.id ? '문서 인덱싱 중...' : card.reason}
-          </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {visibleCards.map((card) => (
+          <ProcurementCard
+            key={card.id}
+            title={card.title}
+            organization={card.organization}
+            deadline={card.deadline}
+            budget={card.budget}
+            contractMethod={card.contractMethod}
+            region={card.region}
+            matchScore={card.matchScore}
+            extraTags={card.reasonTags}
+            ingesting={ingesting === card.id}
+            onIngest={() => handleIngest(card)}
+          />
+        ))}
+      </div>
+      {visibleCount < cards.length && (
+        <div ref={sentinelRef} className="py-4 text-center text-xs text-gray-300">
+          더 불러오는 중...
         </div>
-      ))}
+      )}
     </div>
   )
 }
