@@ -119,6 +119,20 @@ def _section_split(docs: List[Document], cfg: Dict[str, Any]) -> List[Document]:
     )
     out: List[Document] = []
 
+    def append_section(text: str, metadata: Dict[str, Any], section: str) -> None:
+        section_meta = {**metadata, "section": section}
+        if len(text) <= chunk_size:
+            out.append(Document(
+                page_content=f"{_header(section_meta)}\n{text}",
+                metadata=section_meta,
+            ))
+            return
+
+        tmp = Document(page_content=text, metadata=section_meta)
+        for piece in fallback.split_documents([tmp]):
+            piece.page_content = f"{_header(piece.metadata)}\n{piece.page_content}"
+            out.append(piece)
+
     for doc in docs:
         text = doc.page_content.strip()
         if not text:
@@ -138,10 +152,7 @@ def _section_split(docs: List[Document], cfg: Dict[str, Any]) -> List[Document]:
         if boundaries[0][0] > 0:
             head = text[:boundaries[0][0]].strip()
             if head:
-                out.append(Document(
-                    page_content=f"{header}\n{head}",
-                    metadata={**doc.metadata, "section": "서두"},
-                ))
+                append_section(head, doc.metadata, "서두")
 
         # 섹션별 처리 — 200자 미만이면 다음 섹션과 병합
         MIN_SECTION_LEN = 200
@@ -177,17 +188,7 @@ def _section_split(docs: List[Document], cfg: Dict[str, Any]) -> List[Document]:
 
         # 병합된 섹션 청킹
         for section_text, name in merged_sections:
-            if len(section_text) <= chunk_size:
-                out.append(Document(
-                    page_content=f"{header}\n{section_text}",
-                    metadata={**doc.metadata, "section": name},
-                ))
-            else:
-                tmp = Document(page_content=section_text, metadata=doc.metadata)
-                for piece in fallback.split_documents([tmp]):
-                    piece.page_content = f"{header}\n{piece.page_content}"
-                    piece.metadata["section"] = name
-                    out.append(piece)
+            append_section(section_text, doc.metadata, name)
 
     return out
 
