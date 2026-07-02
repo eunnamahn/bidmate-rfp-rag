@@ -217,7 +217,8 @@ def _refresh_nara_cache() -> None:
     if not cfg:
         return
     try:
-        items = nara_agent.search_notices(cfg, keyword=None, days=7)
+        # max_results 기본값(10)으로는 AI추천 무한 스크롤을 채울 후보가 금방 바닥나서 넉넉히 받아둔다.
+        items = nara_agent.search_notices(cfg, keyword=None, days=7, max_results=100)
         _STATE["nara_cache"] = items
         logging.info("나라장터 캐시 갱신 완료: %d건", len(items))
     except Exception as e:
@@ -653,8 +654,14 @@ class NaraIngestRequest(BaseModel):
 
 
 @app.get("/nara/search")
-def nara_search(q: str = "", date: Optional[str] = None, days: int = 3) -> Dict[str, Any]:
-    """나라장터 공고를 메타데이터만 검색한다(다운로드/임베딩 없음 → 인덱스 불변)."""
+def nara_search(
+    q: str = "", date: Optional[str] = None, days: int = 3, count: int = 100,
+) -> Dict[str, Any]:
+    """나라장터 공고를 메타데이터만 검색한다(다운로드/임베딩 없음 → 인덱스 불변).
+
+    count는 UI에 노출되는 값이 아니라 프론트가 무한 스크롤용으로 한 번에 넉넉히
+    받아 클라이언트에서 순차 공개하는 내부 배치 크기다.
+    """
     cfg = _STATE.get("cfg")
     if not cfg:
         raise HTTPException(status_code=503, detail="서버가 준비되지 않았습니다.")
@@ -665,8 +672,11 @@ def nara_search(q: str = "", date: Optional[str] = None, days: int = 3) -> Dict[
             target = datetime.strptime(date, "%Y-%m-%d").date()
         except ValueError:
             raise HTTPException(status_code=400, detail="date는 YYYY-MM-DD 형식이어야 합니다.")
+    max_results = max(1, min(count, 200))
     try:
-        items = nara_agent.search_notices(cfg, keyword=q or None, target_date=target, days=days)
+        items = nara_agent.search_notices(
+            cfg, keyword=q or None, target_date=target, days=days, max_results=max_results,
+        )
     except RuntimeError as e:  # NARA_API_KEY 없음
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -704,7 +714,7 @@ def nara_ingest(req: NaraIngestRequest) -> UploadResponse:
     if result["chunks"] == 0:
         raise HTTPException(
             status_code=422,
-            detail="첨부가 없거나 텍스트를 추출하지 못해 인덱싱할 내용이 없습니다.",
+            detail="이 공고는 첨부파일에서 대화에 필요한 내용을 찾지 못했어요. 원문은 나라장터에서 직접 확인해주세요.",
         )
 
     _refresh_index_state(result["vectorstore"], cfg)

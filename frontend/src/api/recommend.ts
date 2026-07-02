@@ -1,6 +1,18 @@
 import { naraSearch } from './nara'
+import { getCompany } from './company'
 import { api } from './client'
 import { RecommendCard, CompanyInfo } from '../types'
+
+// 개수 선택 UI 없이, 프로필 기준을 넘긴 후보는 가능한 한 많이 받아 프론트 무한 스크롤로 공개한다.
+const TOP_N = 200
+
+// 근거 태그 키(백엔드 recommender.score_breakdown의 REASON_*) → 카드에 표시할 짧은 문구.
+const REASON_LABELS: Record<string, string> = {
+  category: '업종 일치',
+  budget: '예산 규모 적합',
+  method: '선호 입찰방식 일치',
+  deadline: '마감 여유 충분',
+}
 
 // "30억", "5천만원", "1억5천만" 등 → 원 단위 정수
 function parseRevenue(s: string): number {
@@ -23,8 +35,16 @@ function buildProfile(info: CompanyInfo | null) {
     budget_max: rev > 0 ? rev * 3 : (null as number | null),
     bid_methods: [] as string[],
     min_score: 30,
-    top_n: 3,
+    top_n: TOP_N,
   }
+}
+
+// 원본 나라장터 item에서 예산(추정가격/배정예산)을 원 단위 정수로 추출한다.
+function parseBudget(item: Record<string, unknown>): number | null {
+  const raw = (item.presmptPrce ?? item.asignBdgtAmt) as string | number | undefined
+  if (raw === undefined || raw === null || raw === '') return null
+  const n = Number(String(raw).replace(/[^\d.-]/g, ''))
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
 }
 
 function parseDeadline(item: Record<string, unknown>): string {
@@ -35,15 +55,16 @@ function parseDeadline(item: Record<string, unknown>): string {
   return raw
 }
 
-function makeReason(score: number, item: Record<string, unknown>): string {
-  const mid = (item.pubPrcrmntMidClsfcNm as string) ?? ''
-  const method = (item.bidMethdNm as string) ?? ''
-  if (score >= 70)
-    return `업종 분류${mid ? ` (${mid})` : ''} 및 예산 범위가 귀사 조건과 높게 일치합니다.`
-  if (score >= 50)
-    return `주요 입찰 조건${method ? ` (${method})` : ''}이 귀사 프로필과 부분 일치합니다.`
-  return '기본 입찰 자격을 충족하며 마감 여유가 있는 공고입니다.'
+function makeReasonTags(reasons: unknown): string[] {
+  if (!Array.isArray(reasons)) return []
+  return reasons
+    .map((r) => REASON_LABELS[r as string])
+    .filter((label): label is string => !!label)
+    .slice(0, 2)
 }
+
+// 점수화 전 후보 풀 — 무한 스크롤로 스크롤할 만큼 넉넉히 가져온다.
+const CANDIDATE_POOL_SIZE = 100
 
 async function fetchNotices() {
   // 스케줄러 캐시 우선 시도, 비어있거나 실패하면 직접 검색으로 fallback
@@ -51,7 +72,7 @@ async function fetchNotices() {
     const { data } = await api.get<{ notices: unknown[] }>('/nara/recommend-cache')
     if (data.notices?.length) return data.notices as import('../types').NaraNotice[]
   } catch { /* ignore */ }
-  return naraSearch('', 7)
+  return naraSearch('', 7, CANDIDATE_POOL_SIZE)
 }
 
 export async function fetchRecommend(): Promise<RecommendCard[]> {
@@ -59,10 +80,10 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
   const notices = await fetchNotices()
   if (!notices.length) return []
 
-  // 2. localStorage 회사 정보
+  // 2. 실제 회사 정보 — 백엔드 /company에서 조회 (localStorage에는 저장되지 않으므로 여기서 읽으면 안 됨)
   let companyInfo: CompanyInfo | null = null
   try {
-    companyInfo = JSON.parse(localStorage.getItem('company_info') ?? 'null')
+    companyInfo = await getCompany()
   } catch { /* ignore */ }
 
   const profile = buildProfile(companyInfo)
@@ -87,7 +108,7 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
     }),
   )
 
-  // 3. 점수화 — top_n:3 이므로 최대 3건만 반환됨
+  // 3. 점수화 — min_score 이상인 후보 전체를 점수 내림차순으로 받는다(개수 제한은 UI가 아닌 스크롤로 처리).
   const { data } = await api.post<{ results: Record<string, unknown>[] }>(
     '/recommend',
     { profile, bids },
@@ -103,8 +124,11 @@ export async function fetchRecommend(): Promise<RecommendCard[]> {
       title: (r.bidNtceNm as string) ?? '(사업명 없음)',
       organization: ((r.dmndInsttNm ?? r.ntceInsttNm) as string) ?? '',
       deadline: parseDeadline(r),
+      budget: parseBudget(r),
+      contractMethod: (r.cntrctCnclsMthdNm as string) || null,
+      region: (r.rgnLmtBidLocplcJdgmBssNm as string) || null,
       matchScore: (r._score as number) ?? 0,
-      reason: makeReason((r._score as number) ?? 0, r),
+      reasonTags: makeReasonTags(r._reasons),
       item: noticeItem,
     }
   })

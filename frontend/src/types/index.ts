@@ -63,6 +63,7 @@ export interface NaraNotice {
   사업명?: string
   기관?: string
   마감일?: string
+  금액?: number | null
   item: Record<string, unknown>
 }
 
@@ -92,7 +93,10 @@ export interface RecommendCard {
   title: string
   organization: string
   deadline: string
+  budget: number | null
+  contractMethod: string | null
+  region: string | null
   matchScore: number
-  reason: string
+  reasonTags: string[]
   item: Record<string, unknown>
 }

@@ -3,11 +3,33 @@ import { useStore } from '../store/useStore'
 import { useQuery } from '@tanstack/react-query'
 import { fetchHealth } from '../api/config'
 import { fetchDocuments, fileViewUrl, fileDownloadUrl } from '../api/documents'
-import NaraSearch from './NaraSearch'
-import RecommendCards from './RecommendCards'
 import Settings from './Settings'
 
-type Tab = 'docs' | 'nara' | 'recommend' | 'settings'
+type Tab = 'docs' | 'settings'
+type MainView = 'chat' | 'nara' | 'recommend'
+
+const NAV_ITEMS: { id: MainView; label: string; icon: React.ReactNode }[] = [
+  {
+    id: 'nara',
+    label: '나라장터',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'recommend',
+    label: 'AI 추천',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+      </svg>
+    ),
+  },
+]
 
 export default function Sidebar() {
   const [tab, setTab] = useState<Tab>('docs')
@@ -15,6 +37,7 @@ export default function Sidebar() {
 
   const sessions = useStore((s) => s.sessions)
   const currentSessionId = useStore((s) => s.currentSessionId)
+  const sessionUnread = useStore((s) => s.sessionUnread)
   const newSession = useStore((s) => s.newSession)
   const switchSession = useStore((s) => s.switchSession)
   const clearCurrentSession = useStore((s) => s.clearCurrentSession)
@@ -22,6 +45,13 @@ export default function Sidebar() {
   const setDocuments = useStore((s) => s.setDocuments)
   const activeFilename = useStore((s) => s.activeFilename)
   const setActiveFilename = useStore((s) => s.setActiveFilename)
+  const mainView = useStore((s) => s.mainView)
+  const setMainView = useStore((s) => s.setMainView)
+
+  function handleTabClick(id: Tab) {
+    setTab(id)
+    setMainView('chat')
+  }
 
   const { data: health } = useQuery({
     queryKey: ['health'],
@@ -53,26 +83,6 @@ export default function Sidebar() {
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
             d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-        </svg>
-      ),
-    },
-    {
-      id: 'nara',
-      label: '나라장터',
-      icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-        </svg>
-      ),
-    },
-    {
-      id: 'recommend',
-      label: 'AI 추천',
-      icon: (
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-            d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
         </svg>
       ),
     },
@@ -117,7 +127,7 @@ export default function Sidebar() {
         </div>
 
         <button
-          onClick={newSession}
+          onClick={() => { newSession(); setMainView('chat') }}
           className="mt-3 w-full flex items-center gap-2 justify-center py-2 text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -125,6 +135,24 @@ export default function Sidebar() {
           </svg>
           새 채팅
         </button>
+      </div>
+
+      {/* 나라장터 / AI 추천 — 독립 네비게이션 */}
+      <div className="px-3 py-3 border-b border-gray-100 space-y-1">
+        {NAV_ITEMS.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setMainView(item.id)}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+              mainView === item.id
+                ? 'bg-primary-50 text-primary-700'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            {item.icon}
+            {item.label}
+          </button>
+        ))}
       </div>
 
       {/* 대화 히스토리 */}
@@ -136,17 +164,19 @@ export default function Sidebar() {
             const label = turns[0]?.question
               ? turns[0].question.slice(0, 28) + (turns[0].question.length > 28 ? '...' : '')
               : `새 대화 ${i + 1}`
+            const unread = !!sessionUnread[sid]
             return (
               <button
                 key={sid}
-                onClick={() => switchSession(sid)}
-                className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors truncate ${
+                onClick={() => { switchSession(sid); setMainView('chat') }}
+                className={`w-full flex items-center gap-1.5 text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
                   sid === currentSessionId
                     ? 'bg-primary-50 text-primary-700 font-medium'
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                {label}
+                {unread && <span className="w-1.5 h-1.5 rounded-full bg-primary-500 flex-shrink-0" title="새 응답" />}
+                <span className={`truncate ${unread ? 'font-semibold text-gray-800' : ''}`}>{label}</span>
               </button>
             )
           })}
@@ -166,9 +196,9 @@ export default function Sidebar() {
         {TAB_ITEMS.map((t) => (
           <button
             key={t.id}
-            onClick={() => setTab(t.id)}
+            onClick={() => handleTabClick(t.id)}
             className={`flex-1 flex flex-col items-center py-2 gap-0.5 text-[10px] transition-colors ${
-              tab === t.id
+              mainView === 'chat' && tab === t.id
                 ? 'text-primary-600 border-b-2 border-primary-600'
                 : 'text-gray-400 hover:text-gray-600'
             }`}
@@ -198,7 +228,7 @@ export default function Sidebar() {
               {expandDocs && (
                 <div className="space-y-1">
                   <button
-                    onClick={() => setActiveFilename(null)}
+                    onClick={() => { setActiveFilename(null); setMainView('chat') }}
                     className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
                       !activeFilename ? 'bg-primary-50 text-primary-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
                     }`}
@@ -208,7 +238,7 @@ export default function Sidebar() {
                   {documents.map((d) => (
                     <div key={d.파일명}>
                       <button
-                        onClick={() => setActiveFilename(d.파일명)}
+                        onClick={() => { setActiveFilename(d.파일명); setMainView('chat') }}
                         className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors truncate ${
                           activeFilename === d.파일명
                             ? 'bg-primary-50 text-primary-700 font-medium'
@@ -237,8 +267,6 @@ export default function Sidebar() {
           </div>
         )}
 
-        {tab === 'nara' && <NaraSearch />}
-        {tab === 'recommend' && <RecommendCards />}
         {tab === 'settings' && <Settings />}
       </div>
 
