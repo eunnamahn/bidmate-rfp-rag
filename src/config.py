@@ -104,5 +104,9 @@ def make_llm(cfg: Dict[str, Any]):
         kwargs = {"model": llm["model"], "temperature": temperature}
         if base_url:
             kwargs["base_url"] = base_url
+        # Ollama 컨텍스트 창 크기(기본값은 모델별 2048~4096). 큰 청크 실험처럼
+        # 컨텍스트가 잘릴 수 있는 조합에서 config의 llm.num_ctx로 확장한다.
+        if llm.get("num_ctx"):
+            kwargs["num_ctx"] = int(llm["num_ctx"])
         return ChatOllama(**kwargs)
     raise ValueError(f"지원하지 않는 llm provider: {provider}")

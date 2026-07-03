@@ -34,9 +34,10 @@ LLM_PRESETS: Dict[str, Dict[str, Any]] = {
         "reindex": False,
     },
     "ollama-exaone3.5-7.8b": {
-        "label": "EXAONE 3.5 7.8B (Ollama VM)",
+        "label": "EXAONE 3.5 7.8B (Ollama VM) (추천)",
         "provider": "ollama",
         "model": "exaone3.5:7.8b",
+        "num_ctx": 8192,
         "reindex": False,
     },
     "ollama-qwen2.5-14b": {
@@ -55,7 +56,7 @@ EMBEDDING_PRESETS: Dict[str, Dict[str, Any]] = {
         "reindex": True,
     },
     "hf-kure-v1": {
-        "label": "KURE-v1 (HuggingFace, 로컬)",
+        "label": "KURE-v1 (HuggingFace, 로컬) (추천)",
         "provider": "huggingface",
         "model": "nlpai-lab/KURE-v1",
         "reindex": True,
@@ -73,7 +74,7 @@ EMBEDDING_PRESETS: Dict[str, Dict[str, Any]] = {
 
 CHUNK_PRESETS: Dict[str, Dict[str, Any]] = {
     "recursive-500-50": {
-        "label": "Recursive 500/50 (기본)",
+        "label": "Recursive 500/50",
         "strategy": "recursive",
         "size": 500,
         "overlap": 50,
@@ -84,6 +85,13 @@ CHUNK_PRESETS: Dict[str, Dict[str, Any]] = {
         "strategy": "recursive",
         "size": 1000,
         "overlap": 100,
+        "reindex": True,
+    },
+    "recursive-2000-200": {
+        "label": "Recursive 2000/200 (추천)",
+        "strategy": "recursive",
+        "size": 2000,
+        "overlap": 200,
         "reindex": True,
     },
     "recursive-300-30": {
@@ -117,12 +125,12 @@ PARSER_HWP_PRESETS: Dict[str, Dict[str, Any]] = {
         "label": "hwp-hwpx-parser (표 마크다운 보존)",
         "hwp": "hwp-hwpx-parser", "reindex": True,
     },
-    "olefile": {"label": "olefile (OLE 직접파싱, 텍스트)", "hwp": "olefile", "reindex": True},
+    "olefile": {"label": "olefile (OLE 직접파싱, 텍스트) (추천)", "hwp": "olefile", "reindex": True},
 }
 
 PARSER_PDF_PRESETS: Dict[str, Dict[str, Any]] = {
     "pymupdf": {"label": "PyMuPDF (빠름/안정)", "pdf": "pymupdf", "reindex": True},
-    "pdfplumber": {"label": "pdfplumber (표 정밀)", "pdf": "pdfplumber", "reindex": True},
+    "pdfplumber": {"label": "pdfplumber (표 정밀) (추천)", "pdf": "pdfplumber", "reindex": True},
 }
 
 # 프리셋 종류 -> (cfg 섹션 이름, 카탈로그, 현재 프리셋 판별에 쓸 설정 키들)

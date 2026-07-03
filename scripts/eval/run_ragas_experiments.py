@@ -60,6 +60,19 @@ EXPERIMENTS: List[Dict[str, Any]] = [
     )
 ]
 
+# 추가 조합: 초대형 청크(2000/200) + KURE + EXAONE, dense 전용(k=4, BM25 off).
+# 청크 4개 × 2000자면 Ollama 기본 컨텍스트 창을 넘어 잘리므로 num_ctx를 8192로 확장.
+EXPERIMENTS.append({
+    "name": "rec2000_kure_exaone_ctx8k",
+    "desc": "olefile+pdfplumber·rec2000/200·kure·exaone·dense(k=4·BM25 off)·num_ctx 8192",
+    "parser": _OLE,
+    "chunk": "recursive-2000-200",
+    "embedding": "hf-kure-v1",
+    "llm": "ollama-exaone3.5-7.8b",
+    "llm_overrides": {"num_ctx": 8192},
+    "retriever": {"k": 4, "use_bm25": False, "use_reranker": False},
+})
+
 # RAGAS 채점기(조합과 무관하게 고정). 사용자 요청으로 EXAONE 사용.
 # 주의: Ollama 로컬/원격(VM) 모델이므로 OLLAMA_BASE_URL(.env) 또는 config.llm.base_url이
 # 설정돼 있어야 한다. judge로 답변 LLM과 같은 모델을 쓰면 자기편향 가능성에 유의.
@@ -76,6 +89,11 @@ def _apply(base: Dict[str, Any], exp: Dict[str, Any]) -> Dict[str, Any]:
         cfg = catalog.apply_preset(cfg, "chunk", exp["chunk"])
     if "parser" in exp:
         cfg.setdefault("parser", {}).update(exp["parser"])
+    # 프리셋에 없는 세부 설정(num_ctx 등)과 검색 설정(k/use_bm25 등)을 직접 덮어쓴다.
+    if "llm_overrides" in exp:
+        cfg.setdefault("llm", {}).update(exp["llm_overrides"])
+    if "retriever" in exp:
+        cfg.setdefault("retriever", {}).update(exp["retriever"])
     return cfg
 
 

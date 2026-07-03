@@ -7,34 +7,35 @@ data:
   faiss_cache: data/faiss_rfp
 
 parser:
-  hwp: pyhwp                  # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존) | olefile(OLE 직접파싱, 텍스트만)
-  pdf: pymupdf                # pymupdf(빠름/안정) | pdfplumber(표 정밀)
+  hwp: olefile                # pyhwp(빠름) | hwp-hwpx-parser(표 마크다운 보존) | olefile(OLE 직접파싱, 텍스트만) — 실험 1순위(추천)
+  pdf: pdfplumber             # pymupdf(빠름/안정) | pdfplumber(표 정밀) — 실험 1순위(추천)
 
 embedding:
-  provider: openai            # openai | huggingface | ollama
-  model: text-embedding-3-small
+  provider: huggingface       # openai | huggingface | ollama — 실험 결과 KURE-v1이 검색 최강(추천 기본값)
+  model: nlpai-lab/KURE-v1
   # base_url:                 # provider: ollama일 때 VM 주소(예: http://34.x.x.x:11434).
                               #   비우면 .env의 OLLAMA_BASE_URL, 그것도 없으면 로컬 11434.
                               #   예: provider: ollama / model: bge-m3 로 VM 임베딩 사용.
 
 llm:
-  provider: openai            # openai | ollama
-  model: gpt-5-nano           # 이 키는 gpt-4o-mini RPM=0이라 접근 가능한 gpt-5-nano 사용
+  provider: ollama            # openai | ollama — 추천 기본값 EXAONE(무료·최속·품질 최상)
+  model: exaone3.5:7.8b
   temperature: 0
   base_url:                   # ollama 원격 사용 시 GCP VM 주소 (예: http://34.x.x.x:11434)
+  num_ctx: 8192               # Ollama 컨텍스트 창. 2000자 청크 4개가 잘리지 않게 확장
 
 chunk:
   strategy: recursive         # recursive | section
-  size: 500
-  overlap: 50
+  size: 2000
+  overlap: 200
 
 retriever:
   k: 4
-  use_bm25: true              # BM25+dense 하이브리드. 희소(변별력) 단어를 가중해 정밀도 향상
+  use_bm25: false             # true면 BM25+dense 하이브리드. 추천 기본 조합은 dense 전용
                               #   (캐시의 docstore에서 청크를 복원하므로 재파싱 비용 없음)
   bm25_weight: 0.5            # 하이브리드에서 BM25 가중치(dense 가중치는 1 - 이 값)
-  use_reranker: false         # true면 CrossEncoder 리랭커로 후보를 다시 채점해 k개로 압축
-                              #   (의미 기반 오탐 제거에 가장 강력하나 최초 모델 로딩 비용 있음)
+  use_reranker: true          # true면 CrossEncoder 리랭커로 후보를 다시 채점해 k개로 압축
+                              #   (의미 기반 오탐 제거에 가장 강력. 최초 모델 로딩 비용 있음 — 기본 on)
   reranker_model: BAAI/bge-reranker-v2-m3   # sentence-transformers CrossEncoder 모델
   rerank_candidates: 20       # 리랭킹 전 base가 뽑는 후보 수(>= k 권장)
   use_metadata_filter: true   # 질문에 기관명이 있으면 그 기관 문서로만 한정해 검색
