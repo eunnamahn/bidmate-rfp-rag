@@ -168,10 +168,11 @@ pip install sentence-transformers
 
 ### 환경 변수
 
-프로젝트 루트에 `.env` 파일을 만들고 키를 넣는다(`.env`는 깃에 올라가지 않음):
+프로젝트 루트에 `.env` 파일을 만들고 OpenAI와 나라장터 API 키를 넣는다(로컬 모델 연결이 없으면 설정에서 llm과 임베딩 모델을 OpenAi 모델로 교체해야함):
 
 ```
 OPENAI_API_KEY=sk-...
+NARA_API_KEY=...
 ```
 
 ### 실행
