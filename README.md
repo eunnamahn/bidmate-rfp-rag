@@ -45,6 +45,86 @@
 - 본문 소스로 메타데이터의 `텍스트` 컬럼을 쓰지 않고 원본 파일을 직접 재파싱한다.
 - API 키는 코드에 하드코딩하지 않고 `.env`에서만 읽는다.
 
+### 시스템 아키텍쳐 다이어그램
+
+```mermaid
+flowchart TD
+    catalog["catalog.py · 교체 프리셋"] --> cfg["config.yaml"]
+
+    subgraph LLMF["🧠 모델 로딩 (src/config.py 팩토리)"]
+        direction TB
+        cfg --> mk["make_llm / make_embedding<br/>(provider 스위치)"]
+        env[".env<br/>OPENAI_API_KEY · OLLAMA_BASE_URL"] -. 키·주소 .-> mk
+        mk -->|openai| oa["ChatOpenAI · OpenAIEmbeddings<br/>(클라우드 API)"]
+        mk -->|ollama| ol["ChatOllama · OllamaEmbeddings<br/>(원격 GCP VM / 로컬 11434)"]
+        mk -->|huggingface| hf["HuggingFaceEmbeddings<br/>(로컬 in-process · 임베딩 전용)"]
+        rrk["retriever.py<br/>HuggingFaceCrossEncoder<br/>(bge-reranker, 로컬 1회 로드)"]
+    end
+
+    subgraph ING["📥 인덱싱 파이프라인 (배치)"]
+        direction TB
+        files["data/files<br/>HWP · PDF"] --> loader["loader.py<br/>파서 5종 · parse_file"]
+        loader --> chunk["chunking.py<br/>recursive / section"]
+        chunk --> embed["embedding.py<br/>build_vectorstore"]
+        embed --> faiss[("FAISS 캐시<br/>data/faiss_rfp")]
+    end
+
+    subgraph NARA["🛰️ 나라장터 수집 에이전트 (독립 배치/CLI)"]
+        direction TB
+        napi["나라장터 OpenAPI<br/>입찰공고 목록"] --> dl["다운로드 · zip 해제"]
+        dl --> pf["loader.parse_file"]
+        pf --> meta1["metadata_agent<br/>발주기관·금액·마감일·사업명"]
+        meta1 --> split2["chunking.split_documents"]
+        split2 --> add["embedding.add_to_vectorstore<br/>(증분 추가)"]
+    end
+
+    subgraph GRAPH["🧭 도구 호출 수퍼바이저 에이전트 (src/graph.py)"]
+        direction TB
+        cls{"에이전트(LLM)<br/>tool-calling 라우팅<br/>(미지원 시 키워드 폴백)"}
+        cls -->|answer_from_documents| qa["qa 노드<br/>generate_answer(qa)"]
+        cls -->|summarize_rfp| sm["summary 노드<br/>generate_answer(summary)"]
+        cls -->|search_nara_notices| col["collect 노드<br/>나라장터 목록 검색<br/>(메타데이터만)"]
+        act["액션 노드(agent=id 강제)<br/>eligibility · risk<br/>checklist · evaluation"]
+    end
+
+    subgraph RT["💬 검색·생성 런타임"]
+        direction TB
+        retr["retriever.py<br/>top-k · 메타필터 · 기관 라우팅"]
+        gen["generator.py<br/>답변 · 인용 · 후속질문 재작성"]
+    end
+
+    subgraph IF["🖥️ 인터페이스"]
+        ui["streamlit/app.py"] --> backend["backend/app.py · FastAPI<br/>/chat · /summarize"]
+    end
+
+    subgraph EV["📊 평가"]
+        golden["golden_set.json<br/>50문항"] --> ragas["ragas_eval.py<br/>run_ragas_experiments"]
+        ragas --> report["results_summary.md"]
+    end
+
+    backend --> cls
+    qa --> retr
+    sm --> retr
+    act --> retr
+    qa --> gen
+    sm --> gen
+    retr --> faiss
+    add --> faiss
+    col -. "안내" .-> NARA
+
+    oa & ol -. LLM 주입 .-> GRAPH
+    oa & ol -. LLM 주입 .-> gen
+    oa & ol & hf -. 임베딩 주입 .-> embed
+    oa & ol & hf -. 임베딩 주입 .-> retr
+    rrk -. 리랭킹 .-> retr
+
+    cfg -. 제어 .-> ING
+    cfg -. 제어 .-> GRAPH
+    cfg -. 제어 .-> NARA
+    ragas -. 재사용 .-> retr
+    ragas -. 재사용 .-> gen
+```
+
 ### 기술 스택
 
 | 분류 | 기술 |
