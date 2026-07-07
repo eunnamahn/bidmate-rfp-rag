@@ -25,8 +25,10 @@
 [김소원]: https://app.notion.com/p/38420cc01e078040b1a7d3c768bd72cf
 [고귀한]: https://pylog-record.tistory.com/category/%EC%A4%91%EA%B8%89%20%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8
 
-## 📓 참고 자료 및 산출물
+## 📓 보고서 & 발표자료
 보고서: [입찰메이트_결과보고서.pdf](https://github.com/user-attachments/files/29692347/_.pdf)
+
+발표자료: [코드잇part3_1팀_중급프로젝트_발표자료.pdf](https://github.com/user-attachments/files/29735804/part3_1._._.pdf)
 
 
 ## 1. 📌 프로젝트 개요
