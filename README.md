@@ -1,8 +1,8 @@
 # 🤖 입찰메이트 — RFP RAG 질의응답 시스템
 
-가상 B2G 입찰컨설팅 스타트업 **"입찰메이트"**의 사내 RAG(Retrieval-Augmented Generation) 시스템.
+가상 B2G 입찰컨설팅 스타트업 "입찰메이트"의 RAG(Retrieval-Augmented Generation) 시스템.
 공공기관 RFP(제안요청서) 문서를 대상으로 QA·요약·분석 에이전트·나라장터 연동을 수행한다.
-상세 설계는 `plan.md`, 시스템 아키텍처는 `ARCHITECTURE.md` 참고.
+
 
 ## 🎥 시연 영상
 
